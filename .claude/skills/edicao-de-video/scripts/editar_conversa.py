@@ -727,6 +727,160 @@ def cortar_pausas(entrada: str, info: Info, trechos, saida: str, tmp: str) -> No
         sys.exit("Falha ao cortar as pausas.")
 
 
+# --------------------------------------------------------------------------- B-roll (imagens e vídeos de apoio)
+
+@dataclass
+class Broll:
+    ini: float
+    fim: float
+    arquivo: str
+    estilo: str = "tela-cheia"   # "tela-cheia" | "janela"
+    eh_video: bool = False
+    img: np.ndarray | None = None
+    leitor: object = None
+
+
+def _sem_acento(s: str) -> str:
+    import unicodedata
+    s = unicodedata.normalize("NFD", s.lower())
+    return re.sub(r"[^a-z0-9 ]", "", "".join(c for c in s if unicodedata.category(c) != "Mn"))
+
+
+def baixar(url: str, pasta: str) -> str:
+    """Baixa um link (Higgsfield, Canva, qualquer URL direta) para a pasta temporária."""
+    import urllib.request
+    ext = os.path.splitext(url.split("?")[0])[1] or ".bin"
+    destino = os.path.join(pasta, f"broll_{abs(hash(url)) % 10 ** 8}{ext}")
+    if not os.path.exists(destino):
+        req = urllib.request.Request(url, headers={"User-Agent": "editar-conversa/1.0"})
+        with urllib.request.urlopen(req, timeout=120) as r, open(destino, "wb") as f:
+            shutil.copyfileobj(r, f)
+    return destino
+
+
+def carregar_brolls(path: str, palavras: list[dict], trechos, dur: float, tmp: str) -> list[Broll]:
+    """Lê o JSON de B-roll. Cada item: {"arquivo": caminho ou URL, "palavra": "texto falado"
+    ou "inicio": segundos do vídeo original, "duracao": 2.5, "estilo": "tela-cheia"|"janela"}."""
+    itens = json.load(open(path, encoding="utf-8"))
+    base_dir = os.path.dirname(os.path.abspath(path))
+    textos = [_sem_acento(p["palavra"]) for p in palavras]
+    out: list[Broll] = []
+    cursor = 0.0
+    for it in itens:
+        arq = it["arquivo"]
+        if re.match(r"https?://", arq):
+            log(f"Baixando B-roll: {arq[:70]}...")
+            arq = baixar(arq, tmp)
+        elif not os.path.isabs(arq):
+            arq = os.path.join(base_dir, arq)
+        if not os.path.exists(arq):
+            log(f"Atenção: B-roll não encontrado, pulando: {arq}")
+            continue
+        ini = None
+        if it.get("palavra") and palavras:
+            alvo = _sem_acento(it["palavra"]).split()
+            for i in range(len(textos) - len(alvo) + 1):
+                if palavras[i]["inicio"] >= cursor and textos[i:i + len(alvo)] == alvo:
+                    ini = palavras[i]["inicio"] - 0.1
+                    break
+            if ini is None:
+                log(f"Atenção: a palavra '{it['palavra']}' não aparece na fala; B-roll pulado.")
+                continue
+        elif "inicio" in it:
+            t = tempo_seg(it["inicio"])
+            if trechos:  # converte do tempo original para o tempo depois do corte de pausas
+                acum, novo = 0.0, None
+                for a, b in trechos:
+                    if a <= t < b:
+                        novo = acum + t - a
+                        break
+                    acum += b - a
+                t = novo if novo is not None else acum
+            ini = t
+        if ini is None:
+            continue
+        ini = max(0.0, ini)
+        fim = min(dur, ini + float(it.get("duracao", 2.5)))
+        if fim - ini < 0.5:
+            continue
+        eh_video = os.path.splitext(arq)[1].lower() in (".mp4", ".mov", ".webm", ".mkv", ".m4v", ".gif")
+        out.append(Broll(ini, fim, arq, it.get("estilo", "tela-cheia"), eh_video))
+        cursor = fim
+    log(f"B-roll: {len(out)} inserções.")
+    return out
+
+
+def quadro_broll(b: Broll, t: float, base: np.ndarray, ow: int, oh: int, fps: float) -> np.ndarray:
+    """Desenha o B-roll sobre o quadro base, com entrada em zoom/fade e saída em fade."""
+    if b.eh_video:
+        if b.leitor is None:
+            vf = (f"fps={fps},scale={ow}:{oh}:force_original_aspect_ratio=increase,crop={ow}:{oh}"
+                  if b.estilo == "tela-cheia" else f"fps={fps},scale={int(ow * 0.84)}:-2")
+            info_b = sondar(b.arquivo)
+            if b.estilo == "tela-cheia":
+                w, h = ow, oh
+            else:
+                w = int(ow * 0.84) // 2 * 2
+                h = int(round(info_b.h * w / info_b.w / 2)) * 2
+            cmd = ["ffmpeg", "-v", "quiet", "-stream_loop", "-1", "-i", b.arquivo, "-vf", vf + f",scale={w}:{h}",
+                   "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
+            b.leitor = (subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=10 ** 8), w, h)
+        p, w, h = b.leitor
+        buf = p.stdout.read(w * h * 3)
+        midia = np.frombuffer(buf, np.uint8).reshape(h, w, 3) if len(buf) == w * h * 3 else np.zeros((h, w, 3), np.uint8)
+    else:
+        if b.img is None:
+            im = cv2.imread(b.arquivo, cv2.IMREAD_COLOR)
+            if im is None:
+                im = np.zeros((oh, ow, 3), np.uint8)
+            if b.estilo == "tela-cheia":
+                esc = max(ow / im.shape[1], oh / im.shape[0]) * 1.12
+            else:
+                esc = ow * 0.84 / im.shape[1] * 1.08
+            b.img = cv2.resize(im, (int(im.shape[1] * esc), int(im.shape[0] * esc)), interpolation=cv2.INTER_AREA)
+        im = b.img
+        frac = (t - b.ini) / max(0.1, b.fim - b.ini)
+        k = 1.0 / (1.0 + 0.08 * frac)       # zoom lento para dentro (Ken Burns)
+        if b.estilo == "tela-cheia":
+            w, h = ow, oh
+        else:
+            w = int(ow * 0.84) // 2 * 2
+            h = int(im.shape[0] / 1.08 * w / (im.shape[1] / 1.08)) // 2 * 2
+        cw, ch = im.shape[1] * k / (1.12 if b.estilo == "tela-cheia" else 1.08), im.shape[0] * k / (1.12 if b.estilo == "tela-cheia" else 1.08)
+        cw, ch = min(cw, im.shape[1]), min(ch, im.shape[0])
+        r = np.array([(im.shape[1] - cw) / 2, (im.shape[0] - ch) / 2, cw, ch])
+        midia = recortar(im, r, w, h)
+    # entrada (0,25 s): cresce de 92% e aparece; saída (0,2 s): some
+    ent = ease((t - b.ini) / 0.25)
+    sai = ease((b.fim - t) / 0.2)
+    alfa = min(ent, sai)
+    esc = 0.92 + 0.08 * ent
+    if b.estilo == "tela-cheia":
+        cartao = midia
+        if esc < 0.999:
+            cartao = cv2.resize(midia, (int(ow * esc), int(oh * esc)))
+        out = base.copy()
+        y0, x0 = (oh - cartao.shape[0]) // 2, (ow - cartao.shape[1]) // 2
+        roi = out[y0:y0 + cartao.shape[0], x0:x0 + cartao.shape[1]]
+        out[y0:y0 + cartao.shape[0], x0:x0 + cartao.shape[1]] = cv2.addWeighted(cartao, alfa, roi, 1 - alfa, 0)
+        return out
+    # janela: cartão com borda branca e sombra, no terço superior
+    borda = max(6, ow // 140)
+    cartao = cv2.copyMakeBorder(midia, borda, borda, borda, borda, cv2.BORDER_CONSTANT, value=(255, 255, 255))
+    cartao = cv2.resize(cartao, (int(cartao.shape[1] * esc), int(cartao.shape[0] * esc)))
+    ch_, cw_ = cartao.shape[:2]
+    x0 = (ow - cw_) // 2
+    y0 = int(oh * (0.16 if oh > ow else 0.10))
+    y0 = min(y0, oh - ch_)
+    out = base.copy()
+    sombra = out.copy()
+    cv2.rectangle(sombra, (x0 + 10, y0 + 14), (x0 + cw_ + 10, y0 + ch_ + 14), (0, 0, 0), -1)
+    out = cv2.addWeighted(sombra, 0.35 * alfa, out, 1 - 0.35 * alfa, 0)
+    roi = out[y0:y0 + ch_, x0:x0 + cw_]
+    out[y0:y0 + ch_, x0:x0 + cw_] = cv2.addWeighted(cartao[: roi.shape[0], : roi.shape[1]], alfa, roi, 1 - alfa, 0)
+    return out
+
+
 # --------------------------------------------------------------------------- efeitos sonoros
 
 def gerar_efeitos(saida: str, dur: float, eventos: list[tuple[float, str]], sr: int = 48000) -> None:
@@ -1144,7 +1298,7 @@ def gerar_ass(path: str, ow: int, oh: int, palavras, planos, pessoas, fonte: str
 
 # --------------------------------------------------------------------------- render
 
-def renderizar(args, info: Info, planos, pessoas, ow, oh, fps, tmp, ass, voz, musica, efeitos=None):
+def renderizar(args, info: Info, planos, pessoas, ow, oh, fps, tmp, ass, voz, musica, efeitos=None, brolls=()):
     vertical = oh > ow
     cam = Camera(info, ow, oh, pessoas, args.zoom, vertical)
     T = args.duracao_transicao
@@ -1242,12 +1396,18 @@ def renderizar(args, info: Info, planos, pessoas, ow, oh, fps, tmp, ass, voz, mu
                     out = recortar(img, r_a * (1 - k) + r * k, ow, oh)
                 else:
                     out = cv2.addWeighted(out_a, 1 - k, out, k, 0)
+            for b in brolls:
+                if b.ini <= t < b.fim:
+                    out = quadro_broll(b, t, out, ow, oh, fps)
             enc.stdin.write(np.ascontiguousarray(out).tobytes())
             if n % int(fps * 10) == 0:
                 print(f"\r[conversa] {100 * n / max(1, total):5.1f}%", end="", flush=True)
     finally:
         enc.stdin.close()
         enc.wait()
+        for b in brolls:
+            if b.leitor:
+                b.leitor[0].kill()
     print()
     if enc.returncode:
         sys.exit("Falha no ffmpeg ao gerar o vídeo final.")
@@ -1299,6 +1459,8 @@ def main() -> None:
     g.add_argument("--titulo", help="título-gancho animado no início; ~~palavra~~ sai riscada; ' / ' separa linhas")
     g.add_argument("--titulo-ate", type=float, default=3.5, help="até quando o título fica na tela (s)")
     g.add_argument("--fonte-titulo", help="fonte do título (padrão: a mesma das legendas)")
+    g.add_argument("--broll", help="JSON com imagens/vídeos de apoio (arquivo ou URL do Higgsfield/Canva) "
+                                   "e a palavra da fala onde entram")
     args = ap.parse_args()
     if args.dinamico:
         args.cortar_pausas = True
@@ -1372,6 +1534,7 @@ def main() -> None:
                         if p["fim"] > desloc and p["inicio"] < desloc + info.dur]
 
         # 2) corte de pausas
+        trechos = None
         if args.cortar_pausas:
             nivel0 = os.path.join(tmp, "pausas.wav")
             run(["ffmpeg", "-v", "error", "-y", "-i", args.entrada, "-vn", "-ac", "1", "-ar", "48000", nivel0])
@@ -1385,6 +1548,7 @@ def main() -> None:
                 info = sondar(sem)
                 palavras = mapear_palavras(palavras, trechos)
             else:
+                trechos = None
                 log("Sem pausas relevantes para cortar.")
         if palavras:
             escrever_srt(palavras, base_saida + ".srt")
@@ -1426,7 +1590,8 @@ def main() -> None:
                          args.maiusculas, vertical, cam, args.titulo, args.titulo_ate, args.fonte_titulo)
         log(f"Fonte: {fonte}. Legendas: {len(palavras)} palavras. Arquivos de análise em {pasta}")
 
-        # 6) trilha e efeitos
+        # 6) B-roll, trilha e efeitos
+        brolls = carregar_brolls(args.broll, palavras, trechos, info.dur, tmp) if args.broll else []
         musica = efeitos = None
         if not args.sem_musica and not args.so_analise:
             musica = os.path.join(tmp, "musica.wav")
@@ -1439,20 +1604,21 @@ def main() -> None:
                     sons.append((planos[i].ini + args.duracao_transicao / 2, "whoosh"))
                 elif planos[i].nivel > planos[i - 1].nivel:
                     sons.append((planos[i].ini, "swish"))
+            sons += [(b.ini + 0.12, "whoosh") for b in brolls]
             efeitos = os.path.join(tmp, "efeitos.wav")
             gerar_efeitos(efeitos, info.dur, sorted(sons))
         desenhar_linha_do_tempo(os.path.join(pasta, "linha_do_tempo.png"), info.dur, planos, palavras,
-                                args.titulo_ate if args.titulo else 0, voz, musica, efeitos, len(pessoas))
+                                args.titulo_ate if args.titulo else 0, voz, musica, efeitos, len(pessoas), brolls)
         if args.so_analise:
             return
 
-        renderizar(args, info, planos, pessoas, ow, oh, fps, tmp, ass, voz, musica, efeitos)
+        renderizar(args, info, planos, pessoas, ow, oh, fps, tmp, ass, voz, musica, efeitos, brolls)
         log(f"Pronto: {args.saida} ({info.dur:.1f}s)")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def desenhar_linha_do_tempo(path, dur, planos, palavras, titulo_ate, voz, musica, efeitos, k) -> None:
+def desenhar_linha_do_tempo(path, dur, planos, palavras, titulo_ate, voz, musica, efeitos, k, brolls=()) -> None:
     """Imagem tipo editor: faixas T (textos), V (planos), A1 voz, A2 trilha, A3 efeitos."""
     W, rot_w, alt = 1600, 70, 54
     faixas = [("T", None), ("V", None), ("A1", voz), ("A2", musica), ("A3", efeitos)]
@@ -1475,6 +1641,9 @@ def desenhar_linha_do_tempo(path, dur, planos, palavras, titulo_ate, voz, musica
         if pl.nivel > 1:
             cor = tuple(min(255, int(c * 1.25)) for c in cor)
         cv2.rectangle(img, (px(pl.ini) + 1, y + 6), (px(pl.fim) - 1, y + alt - 6), cor, -1)
+    for b in brolls:  # B-roll por cima do vídeo, em roxo listrado
+        cv2.rectangle(img, (px(b.ini), y + 2), (px(b.fim), y + alt - 2), (255, 120, 170), -1)
+        cv2.putText(img, "B", (px(b.ini) + 4, y + 34), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (40, 20, 40), 2)
     for i, (nome, arq) in enumerate(faixas[2:], start=2):
         if not arq or not os.path.exists(arq):
             continue

@@ -1,6 +1,6 @@
 ---
 name: edicao-de-video
-description: Edita vídeos por conversa, sem precisar de editor. O usuário manda o vídeo e pede em linguagem natural ("deixa mais dinâmico", "corta as pausas", "põe legenda e zoom", "coloca um título") e recebe o vídeo pronto. Edição automática completa de vídeos falados (uma pessoa para a câmera, conversas, podcasts e entrevistas): corte de pausas, zoom em quem está falando e zoom "soco" no ritmo das frases, transições com whoosh, voz tratada, legendas animadas palavra a palavra, título-gancho colorido, nome e cargo, trilha de fundo e efeitos sonoros. Também: cortar, juntar clipes, formato vertical 9:16 para Reels/TikTok/Shorts, legendas (queimadas ou em faixa), texto na tela, logo/marca d'água, trilha de fundo com ducking, tirar silêncios (jump cut), normalizar e limpar áudio, velocidade, fade, comprimir, versão para WhatsApp, GIF, thumbnail. Use sempre que o usuário pedir para editar, cortar, recortar, legendar, converter, redimensionar, comprimir ou preparar um vídeo para redes sociais, mesmo sem dizer "ffmpeg".
+description: Edita vídeos por conversa, sem precisar de editor. O usuário manda o vídeo e pede em linguagem natural ("deixa mais dinâmico", "corta as pausas", "põe legenda e zoom", "coloca um título") e recebe o vídeo pronto. Edição automática completa de vídeos falados (uma pessoa para a câmera, conversas, podcasts e entrevistas): corte de pausas, zoom em quem está falando e zoom "soco" no ritmo das frases, transições com whoosh, voz tratada, legendas animadas palavra a palavra, título-gancho colorido, nome e cargo, trilha de fundo, efeitos sonoros e imagens/cenas de apoio (B-roll, inclusive geradas no Higgsfield ou no Canva) encaixadas na palavra certa da fala. Também: cortar, juntar clipes, formato vertical 9:16 para Reels/TikTok/Shorts, legendas (queimadas ou em faixa), texto na tela, logo/marca d'água, trilha de fundo com ducking, tirar silêncios (jump cut), normalizar e limpar áudio, velocidade, fade, comprimir, versão para WhatsApp, GIF, thumbnail. Use sempre que o usuário pedir para editar, cortar, recortar, legendar, converter, redimensionar, comprimir ou preparar um vídeo para redes sociais, mesmo sem dizer "ffmpeg".
 ---
 
 # Edição de vídeo
@@ -34,10 +34,49 @@ rodada de edição:
 | "coloca meu nome" | `--nomes "Nome" --cargos "Cargo"` |
 | "usa a cor da minha marca" | `--cor-destaque "#HEX"` |
 | "corta do minuto 1 ao 2" | `video.sh cortar` antes, ou `--trecho 1:00-2:00` |
+| "põe imagens/cenas", "ilustra quando eu falo de X", "coloca um lugar" | `--broll broll.json` (veja "Imagens e cenas de apoio") |
 
 Se o pedido for vago ("deixa bonito", "edita pra mim"), use `--dinamico --formato vertical
 --maiusculas` para redes sociais, ou o padrão para YouTube/podcast, e pergunte só o que não
 dá para adivinhar: o nome que aparece na tela e o título-gancho, se ele quiser um.
+
+## Imagens e cenas de apoio (B-roll), com Higgsfield e Canva
+
+Para ilustrar a fala com imagens, cenas ou lugares, monte um `broll.json` e passe em `--broll`:
+
+```json
+[
+  {"arquivo": "https://...link do Higgsfield...", "palavra": "praia", "duracao": 2.5},
+  {"arquivo": "escritorio.mp4", "palavra": "no meu escritório", "duracao": 3},
+  {"arquivo": "grafico.png", "palavra": "faturamento", "estilo": "janela"},
+  {"arquivo": "logo.png", "inicio": "0:42", "duracao": 2}
+]
+```
+
+- `palavra`: a mídia entra quando essa palavra (ou expressão) é falada. Cada item procura a
+  palavra depois do item anterior, e acentos e maiúsculas não importam. Prefira isso a `inicio`.
+- `inicio`: tempo no vídeo **original** (já ajustado se as pausas forem cortadas).
+- `estilo`: `tela-cheia` (padrão, com zoom lento) ou `janela` (cartão com borda sobre o vídeo,
+  bom para prints, gráficos e produtos).
+- Imagens (jpg/png) ou vídeos (mp4/mov/webm/gif). Links são baixados sozinhos.
+- Entra com zoom e fade e, com `--efeitos`, com whoosh. A legenda continua por cima.
+
+**De onde tirar as imagens e cenas:**
+1. **Higgsfield** (conector `Higgsfield_AI`). Pela conexão dá para **ler** a conta, mas não gerar.
+   O fluxo é:
+   1. Leia a transcrição (`<saida>_analise/transcricao.json`) e sugira ao usuário de 3 a 6 momentos
+      a ilustrar, com o prompt pronto de cada cena (ex.: "homem de camiseta preta em pé numa
+      ilha pequena no meio do mar, luz de fim de tarde, cinematográfico, vertical 9:16").
+   2. O usuário gera no app do Higgsfield (créditos dele).
+   3. Use `show_generations` (`type: "image"` ou `"video"`) para pegar as URLs do resultado e
+      monte o `broll.json` com elas.
+   Confira os créditos com `balance` antes de sugerir muitas cenas em vídeo.
+2. **Canva** (conector `Canva`): gere imagens com `generate-image` e exporte com
+   `export-design` para obter um link.
+3. **Arquivos do usuário**: fotos, prints e vídeos que ele mandar.
+
+Se o download de um link falhar por bloqueio de rede (ambiente na nuvem), consulte a
+documentação do ambiente para liberar o host ou peça ao usuário para baixar e mandar o arquivo.
 
 ## Vídeos falados (uma pessoa, conversa, podcast, entrevista): edição completa automática
 
@@ -113,6 +152,7 @@ comando só:
 | `--ritmo 3` | troca o aperto do zoom a cada ~3 s, sempre no início de uma frase |
 | `--efeitos --volume-efeitos -4` | faixa de efeitos sonoros (sintetizados, sem direitos autorais) |
 | `--titulo "texto" --titulo-ate 3.5 --fonte-titulo "Fonte"` | título-gancho animado nos primeiros segundos |
+| `--broll broll.json` | imagens e vídeos de apoio na palavra certa (Higgsfield, Canva ou arquivos) |
 
 ### Como decide quem está falando
 
