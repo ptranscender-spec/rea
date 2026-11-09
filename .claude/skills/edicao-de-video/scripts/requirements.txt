@@ -1,0 +1,3 @@
+numpy
+opencv-python-headless<5   # a série 4.x traz o detector de rostos embutido
+faster-whisper             # legendas automáticas (baixa o modelo na 1ª vez)

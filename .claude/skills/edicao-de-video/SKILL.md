@@ -1,9 +1,94 @@
 ---
 name: edicao-de-video
-description: Edita vídeos com ffmpeg: cortar, juntar clipes, formato vertical 9:16 para Reels/TikTok/Shorts, legendas (queimadas ou em faixa), texto na tela, logo/marca d'água, trilha de fundo com ducking, tirar silêncios (jump cut), normalizar e limpar áudio, velocidade, fade, comprimir, versão para WhatsApp, GIF, thumbnail. Use sempre que o usuário pedir para editar, cortar, recortar, legendar, converter, redimensionar, comprimir ou preparar um vídeo para redes sociais, mesmo sem dizer "ffmpeg".
+description: Edita vídeos com ffmpeg. Edição automática completa de conversas, podcasts e entrevistas (zoom em quem está falando alternando entre as pessoas, transições, voz tratada, legendas animadas palavra a palavra, nome e cargo de cada pessoa, trilha de fundo). Também: cortar, juntar clipes, formato vertical 9:16 para Reels/TikTok/Shorts, legendas (queimadas ou em faixa), texto na tela, logo/marca d'água, trilha de fundo com ducking, tirar silêncios (jump cut), normalizar e limpar áudio, velocidade, fade, comprimir, versão para WhatsApp, GIF, thumbnail. Use sempre que o usuário pedir para editar, cortar, recortar, legendar, converter, redimensionar, comprimir ou preparar um vídeo para redes sociais, mesmo sem dizer "ffmpeg".
 ---
 
 # Edição de vídeo
+
+## Conversa, podcast ou entrevista: edição completa automática
+
+Quando o vídeo tem pessoas conversando, use `scripts/editar_conversa.py`. Ele entrega, num
+comando só:
+- **zoom em quem está falando**, alternando entre as pessoas, com plano aberto de abertura e de
+  respiro em falas longas (a cada ~9 s), transição de zoom animado ou dissolve e um leve zoom
+  lento durante cada plano;
+- **voz tratada**: ruído e chiado reduzidos (o limiar se ajusta ao nível medido no vídeo),
+  silêncio entre frases limpo, graves embolados cortados, presença, de-esser, compressão e
+  volume final em -14 LUFS (padrão de Instagram/YouTube/TikTok);
+- **legendas animadas** palavra a palavra (a palavra falada fica em destaque), fonte em
+  negrito com contorno, frases curtas, posição que acompanha o enquadramento;
+- **nome e cargo** de cada pessoa em lower third animado, na primeira vez que ela aparece;
+- **trilha de fundo** (sua música, ou uma trilha ambiente original gerada) que abaixa sozinha
+  quando alguém fala;
+- correção de cor leve, nitidez e vinheta.
+
+### Passo a passo
+
+1. **Dependências** (uma vez): `pip install -r <pasta da skill>/scripts/requirements.txt`.
+   Precisa de `opencv-python-headless` **4.x** (a 5.x não traz o detector de rostos).
+2. **Pergunte ao usuário** o que não dá para adivinhar: nomes e cargos (da esquerda para a
+   direita no vídeo), formato (original/horizontal, vertical 9:16, quadrado) e se tem uma
+   música própria. Se ele não souber, siga com os padrões.
+3. **Análise primeiro** (rápida, não renderiza):
+   ```bash
+   C="<pasta da skill>/scripts/editar_conversa.py"
+   python3 $C entrada.mp4 -o final.mp4 --nomes "Ana Souza" "Carlos Lima" \
+       --cargos "Apresentadora" "Convidado" --so-analise
+   ```
+   Isso cria `final_analise/` com:
+   - `pessoas.jpg`: abra e confira se cada rosto tem a caixa e o nome certos. Se os nomes
+     estiverem trocados, inverta a ordem em `--nomes`. Se faltar ou sobrar gente, use `--pessoas N`.
+   - `planos.json`: os cortes (início, fim, plano aberto ou close de qual pessoa).
+   - `transcricao.json`: as palavras da legenda. **Revise** a grafia de nomes próprios,
+     marcas e termos técnicos e corrija direto no JSON. As próximas execuções reutilizam esse
+     arquivo; apague-o para transcrever de novo.
+4. **Prévia** de um trecho, para o usuário aprovar o visual antes do render longo:
+   `python3 $C entrada.mp4 -o previa.mp4 --nomes ... --trecho 0:00-0:40 --preset veryfast`
+   Extraia 2 ou 3 quadros (`video.sh capa`) e confira legenda, nomes e enquadramento.
+5. **Render final** com o mesmo comando, sem `--so-analise` e sem `--trecho`. Ele gera
+   `final.mp4` e `final.srt`. Para conferir: `video.sh info final.mp4`, alguns quadros e a duração.
+
+### Opções úteis
+
+| Opção | Efeito |
+|---|---|
+| `--formato vertical` | 1080x1920. Abre com tela dividida (uma pessoa em cima e outra embaixo, legenda no meio) e alterna closes em tela cheia |
+| `--formato quadrado` / `horizontal` | 1080x1080 / 1920x1080 |
+| `--musica trilha.mp3` / `--sem-musica` | música própria (fica em loop e com fade) ou nenhuma |
+| `--volume-musica -24` | trilha mais alta (padrão -27 LUFS; -30 fica mais discreta) |
+| `--voz leve\|media\|forte` | intensidade da limpeza de ruído (`forte` para ambiente barulhento) |
+| `--maiusculas` | legenda em CAIXA ALTA (estilo Reels) |
+| `--estilo-legenda caixa` | legenda sobre faixa escura, sem destaque por palavra |
+| `--cor-destaque "#00E5FF"` | cor da palavra falada e da faixa do cargo (use a cor da marca) |
+| `--fonte "Montserrat" --pasta-fontes ./fontes` | fonte da marca (arquivo .ttf/.otf na pasta) |
+| `--zoom 1.3` | closes mais fechados (`0.8` mais abertos) |
+| `--transicao corte\|fade\|zoom` | estilo da troca de plano (padrão `zoom`; entre duas pessoas é sempre dissolve curto) |
+| `--max-close 7` / `--min-plano 1.5` | ritmo: planos mais curtos deixam mais dinâmico |
+| `--abertura 0` | começa direto no close |
+| `--legenda arquivo.srt` / `nenhuma` | legenda pronta em vez de transcrever |
+| `--modelo medium` | transcrição mais precisa (mais lenta). Padrão `small` |
+| `--falantes cortes.csv` | cortes manuais, linhas `inicio,fim,pessoa` (pessoa 0 = plano aberto) |
+| `--sem-cor` | não mexe na cor nem na nitidez |
+
+### Como decide quem está falando
+
+1. Acha os rostos e agrupa por posição (cada grupo é uma pessoa, da esquerda para a direita).
+2. Mede o movimento da boca de cada pessoa, descontando o movimento da cabeça, e cruza com o
+   áudio: só há close quando alguém fala.
+3. Se cada pessoa tem um microfone num canal (estéreo L/R), usa o volume de cada canal como
+   pista principal. É a forma mais confiável: recomende gravar assim.
+4. Suaviza o resultado: planos de no mínimo 2 s, pausas curtas não cortam, sobreposição de
+   falas vira plano aberto.
+
+**Se errar** (pessoas de perfil, rosto coberto, câmera se movendo): rode com `--so-analise`,
+veja `planos.json`, escreva um CSV com os trechos certos e passe em `--falantes`.
+
+**Limitações:** foi pensado para câmera fixa e pessoas sentadas. Com vários ângulos de câmera
+já editados, use `--falantes` ou só as legendas/voz (`--abertura 0 --max-close 9999`). Sem
+internet na primeira execução, o modelo do Whisper não baixa: passe `--legenda arquivo.srt`.
+O render roda em cerca de 0,6x o tempo real em 1080p com 4 núcleos (10 min de vídeo levam ~15 min).
+
+## Outras edições (comandos rápidos)
 
 Toda edição passa pelo ffmpeg. O script `scripts/video.sh` (nesta pasta) já traz as
 receitas testadas; use-o antes de escrever um comando ffmpeg do zero.

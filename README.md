@@ -26,6 +26,7 @@ Veja [REA-funcoes-completas.md](REA-funcoes-completas.md) para a lista de todos 
 
 ## Skill de edição de vídeo
 Em [.claude/skills/edicao-de-video](.claude/skills/edicao-de-video/SKILL.md) há uma skill para o Claude Code
-que edita vídeos com ffmpeg (cortar, juntar, vertical para Reels/TikTok, legendas, música, comprimir etc.).
+que edita vídeos com ffmpeg. Em conversas e podcasts faz a edição completa sozinha: zoom em quem está falando,
+transições, voz tratada, legendas animadas, nomes e trilha de fundo. Também corta, junta, converte para vertical, comprime etc.
 Ela é carregada automaticamente ao abrir o Claude Code nesta pasta; para usar em qualquer projeto,
 copie a pasta para `~/.claude/skills/`.
