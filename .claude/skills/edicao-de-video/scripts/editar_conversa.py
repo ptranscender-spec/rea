@@ -7,6 +7,8 @@ Recebe um vídeo com uma ou mais pessoas falando e entrega:
   * legendas animadas palavra a palavra, com fonte bonita e contorno;
   * nome (e cargo) de cada pessoa em lower third animado;
   * trilha de fundo que abaixa sozinha quando alguém fala;
+  * pausas cortadas, zoom "soco" no ritmo das frases e efeitos sonoros (--dinamico);
+  * título de abertura animado e colorido (--titulo "sem pagar ~~editor~~");
   * leve correção de cor e nitidez.
 
 Uso básico:
@@ -83,7 +85,8 @@ def sondar(path: str) -> Info:
 def ler_quadros(path: str, w: int, h: int, fps: float, gray: bool = False):
     """Gera quadros (numpy) via ffmpeg, já redimensionados para w x h."""
     pix = "gray" if gray else "bgr24"
-    cmd = ["ffmpeg", "-v", "error", "-i", path, "-vf", f"fps={fps},scale={w}:{h}:flags=bicubic",
+    # -v quiet: ao parar a leitura antes do fim, o ffmpeg reclamaria de "broken pipe"
+    cmd = ["ffmpeg", "-v", "quiet", "-i", path, "-vf", f"fps={fps},scale={w}:{h}:flags=bicubic",
            "-f", "rawvideo", "-pix_fmt", pix, "-"]
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, bufsize=10 ** 8)
     tam = w * h * (1 if gray else 3)
@@ -482,6 +485,7 @@ class Plano:
     fim: float
     tipo: str          # "aberto" | "close" | "dividido"
     pessoa: int = -1
+    nivel: float = 1.0  # aperto extra do zoom ("soco" do modo dinâmico)
 
 
 def planejar(rot: np.ndarray, k: int, dur: float, min_plano: float, max_close: float,
@@ -556,13 +560,219 @@ def planejar(rot: np.ndarray, k: int, dur: float, min_plano: float, max_close: f
     # junta planos iguais consecutivos
     final: list[Plano] = []
     for p in planos:
-        if final and final[-1].tipo == p.tipo and final[-1].pessoa == p.pessoa:
+        if final and final[-1].tipo == p.tipo and final[-1].pessoa == p.pessoa and final[-1].nivel == p.nivel:
             final[-1].fim = p.fim
         else:
             final.append(p)
     if final:
         final[-1].fim = dur
     return final
+
+
+def alinhar_cortes(planos: list[Plano], palavras: list[dict], tol: float = 0.5) -> list[Plano]:
+    """Move cada corte para logo antes do início de uma palavra (nunca corta no meio da fala)."""
+    if not palavras or len(planos) < 2:
+        return planos
+    inicios = np.array([p["inicio"] for p in palavras])
+    for i in range(1, len(planos)):
+        b = planos[i].ini
+        perto = inicios[(inicios > b - tol) & (inicios < b + tol * 0.6)]
+        if len(perto):
+            nb = float(perto[np.argmin(np.abs(perto - b))]) - 0.06
+            if nb - planos[i - 1].ini > 0.6 and planos[i].fim - nb > 0.6:
+                planos[i - 1].fim = planos[i].ini = nb
+    return planos
+
+
+def dinamizar(planos: list[Plano], palavras: list[dict], ritmo: float, k: int) -> list[Plano]:
+    """Quebra planos longos no início das frases, alternando o aperto do zoom (corte "soco")."""
+    if ritmo <= 0:
+        return planos
+    frases = [f[0]["inicio"] - 0.04 for f in agrupar_frases(palavras, 34, 7)] if palavras else []
+    if k == 1 and planos:
+        # uma pessoa falando para a câmera: depois da abertura, alterna enquadramentos a cada frase
+        variantes = [("close", 1.0), ("aberto", 1.0), ("close", 1.28), ("aberto", 1.22)]
+        ini = planos[0].fim if planos[0].tipo == "aberto" and len(planos) > 1 else 0.0
+        fim = planos[-1].fim
+        cortes = [ini]
+        for f in frases:
+            if f >= cortes[-1] + ritmo * 0.8 and f <= fim - 1.0:
+                cortes.append(f)
+        if not frases:
+            while cortes[-1] + ritmo <= fim - 1.0:
+                cortes.append(cortes[-1] + ritmo)
+        cortes.append(fim)
+        novos = planos[:1] if ini > 0 else []
+        for i, (a, b) in enumerate(zip(cortes, cortes[1:])):
+            tipo, nv = variantes[i % len(variantes)]
+            novos.append(Plano(a, b, tipo, 0 if tipo == "close" else -1, nv))
+        return novos
+    niveis = [1.0, 1.3]
+    novos: list[Plano] = []
+    for pl in planos:
+        quebra = pl.tipo == "close" or (pl.tipo == "aberto" and k <= 1)
+        if not quebra or pl.fim - pl.ini < ritmo * 1.6:
+            novos.append(pl)
+            continue
+        t, j = pl.ini, 0
+        while True:
+            alvos = [f for f in frases if t + ritmo * 0.8 <= f <= pl.fim - 1.0]
+            if frases:
+                prox = alvos[0] if alvos else None
+            else:
+                prox = t + ritmo if t + ritmo <= pl.fim - 1.0 else None
+            if prox is None:
+                novos.append(Plano(t, pl.fim, pl.tipo, pl.pessoa, niveis[j % 2]))
+                break
+            novos.append(Plano(t, prox, pl.tipo, pl.pessoa, niveis[j % 2]))
+            t, j = prox, j + 1
+    return novos
+
+
+def tipo_transicao(ant: Plano | None, pl: Plano, modo: str) -> str:
+    """'corte', 'zoom' ou 'fade' para a entrada do plano pl."""
+    if ant is None or modo == "corte":
+        return "corte"
+    if ant.tipo == pl.tipo and ant.pessoa == pl.pessoa:
+        return "corte"   # mesmo enquadramento com outro aperto: corte seco ("soco")
+    if ant.tipo == pl.tipo == "close" or modo == "fade" or "dividido" in (ant.tipo, pl.tipo):
+        return "fade"
+    return "zoom"
+
+
+# --------------------------------------------------------------------------- pausas
+
+def detectar_trechos_de_fala(wav: str, palavras: list[dict], pausa_min: float, fps: float,
+                             folga: float = 0.12) -> list[tuple[float, float]]:
+    """Trechos a manter: fala (áudio + palavras), com pausas menores que pausa_min preservadas."""
+    x, sr = ler_wav(wav)
+    mono = x.mean(axis=1)
+    passo = int(sr * 0.02)
+    n = len(mono) // passo
+    r = np.sqrt((mono[: n * passo].reshape(n, passo) ** 2).mean(axis=1) + 1e-12)
+    db = 20 * np.log10(r)
+    piso, teto = np.percentile(db, 10), np.percentile(db, 90)
+    fala = db > piso + max(6.0, 0.3 * (teto - piso))
+    for p in palavras:
+        fala[int(p["inicio"] / 0.02):int(p["fim"] / 0.02) + 1] = True
+    dur = n * 0.02
+    trechos: list[list[float]] = []
+    i = 0
+    while i < n:
+        if fala[i]:
+            j = i
+            while j < n and fala[j]:
+                j += 1
+            a, b = max(0.0, i * 0.02 - folga), min(dur, j * 0.02 + folga)
+            if trechos and a - trechos[-1][1] < pausa_min:
+                trechos[-1][1] = b
+            else:
+                trechos.append([a, b])
+            i = j
+        i += 1
+    q = lambda v: round(v * fps) / fps  # noqa: E731  (alinha à grade de quadros)
+    return [(q(a), q(b)) for a, b in trechos if q(b) - q(a) >= 0.2]
+
+
+def mapear_palavras(palavras: list[dict], trechos) -> list[dict]:
+    out, acum = [], 0.0
+    bases = []
+    for a, b in trechos:
+        bases.append((a, b, acum))
+        acum += b - a
+    for p in palavras:
+        meio = (p["inicio"] + p["fim"]) / 2
+        for a, b, base in bases:
+            if a <= meio < b:
+                out.append(dict(p, inicio=round(max(a, p["inicio"]) - a + base, 3),
+                                fim=round(min(b, p["fim"]) - a + base, 3)))
+                break
+    return out
+
+
+def cortar_pausas(entrada: str, info: Info, trechos, saida: str, tmp: str) -> None:
+    """Gera o vídeo só com os trechos de fala (emendas de áudio com fade de 8 ms)."""
+    wav = os.path.join(tmp, "cortes.wav")
+    run(["ffmpeg", "-v", "error", "-y", "-i", entrada, "-vn", "-ar", "48000", "-ac", str(min(2, info.canais)), wav])
+    x, sr = ler_wav(wav)
+    f = int(sr * 0.008)
+    rampa = np.linspace(0, 1, f)[:, None]
+    partes = []
+    for a, b in trechos:
+        seg = x[int(a * sr):int(b * sr)].copy()
+        if len(seg) > 2 * f:
+            seg[:f] *= rampa
+            seg[-f:] *= rampa[::-1]
+        partes.append(seg)
+    aud = os.path.join(tmp, "cortes_audio.wav")
+    escrever_wav(aud, np.concatenate(partes), sr)
+    cmd = ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{info.w}x{info.h}",
+           "-r", f"{info.fps}", "-i", "-", "-i", aud, "-map", "0:v", "-map", "1:a", "-c:v", "libx264",
+           "-preset", "veryfast", "-crf", "12", "-pix_fmt", "yuv420p", "-c:a", "pcm_s16le", "-shortest", saida]
+    enc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+    k = 0
+    try:
+        for nq, img in enumerate(ler_quadros(entrada, info.w, info.h, info.fps)):
+            t = (nq + 0.5) / info.fps
+            while k < len(trechos) and t >= trechos[k][1]:
+                k += 1
+            if k >= len(trechos):
+                break
+            if t >= trechos[k][0]:
+                enc.stdin.write(img.tobytes())
+    finally:
+        enc.stdin.close()
+        enc.wait()
+    if enc.returncode:
+        sys.exit("Falha ao cortar as pausas.")
+
+
+# --------------------------------------------------------------------------- efeitos sonoros
+
+def gerar_efeitos(saida: str, dur: float, eventos: list[tuple[float, str]], sr: int = 48000) -> None:
+    """Faixa de efeitos: whoosh nas transições, pop nos textos. Sintetizados (sem direitos)."""
+    n = int(dur * sr) + sr
+    L = np.zeros(n, np.float32)
+    R = np.zeros(n, np.float32)
+    rng = np.random.default_rng(3)
+
+    def whoosh(d: float, ganho: float):
+        m = int(d * sr)
+        t = np.arange(m) / sr
+        ruido = rng.normal(0, 1, m)
+        corte = 300 + 3500 * np.sin(np.pi * t / d) ** 2         # varredura de filtro
+        alpha = 1 - np.exp(-2 * np.pi * corte / sr)
+        y = np.zeros(m)
+        acc = 0.0
+        for i in range(m):                                        # passa-baixas variável
+            acc += alpha[i] * (ruido[i] - acc)
+            y[i] = acc
+        env = np.sin(np.pi * t / d) ** 1.5
+        y = y * env / (np.abs(y).max() + 1e-9) * ganho
+        pan = t / d
+        return y * (1 - pan * 0.7), y * (0.3 + pan * 0.7)
+
+    def pop(ganho: float):
+        m = int(0.09 * sr)
+        t = np.arange(m) / sr
+        f = 900 * np.exp(-t * 18) + 280
+        y = np.sin(2 * np.pi * np.cumsum(f) / sr) * np.exp(-t * 45) * ganho
+        return y, y
+
+    for t0, tipo in eventos:
+        if tipo == "whoosh":
+            a, b = whoosh(0.5, 0.30)
+            t0 -= 0.25
+        elif tipo == "swish":
+            a, b = whoosh(0.22, 0.16)
+            t0 -= 0.11
+        else:
+            a, b = pop(0.22)
+        i = int(max(0.0, t0) * sr)
+        j = min(n, i + len(a))
+        L[i:j] += a[: j - i]
+        R[i:j] += b[: j - i]
+    escrever_wav(saida, np.stack([L, R], 1)[: int(dur * sr)], sr)
 
 
 # --------------------------------------------------------------------------- enquadramento
@@ -585,13 +795,15 @@ class Camera:
         y0 = min(max(cy - ancora_y * ch, 0), H - ch)
         return np.array([x0, y0, cw, ch], float)
 
-    def close(self, j: int, t: float, asp: float | None = None, aperto: float = 3.0) -> np.ndarray:
+    def close(self, j: int, t: float, asp: float | None = None, aperto: float = 3.0, nivel: float = 1.0) -> np.ndarray:
         asp = asp or self.asp
         cx, cy, s = self.p[j].em(t)
-        ch = aperto * s / self.zoom
+        z = self.zoom * nivel
+        ch = aperto * s / z
         if asp < 1:  # vertical: mais altura para caber ombros
-            ch = 3.4 * s / self.zoom
-        ch = max(ch, self.oh / 2.6 if asp >= 1 else self.ow / asp / 2.6)  # limita a ampliação
+            ch = 3.4 * s / z
+        lim = (self.oh if asp >= 1 else self.ow / asp) / 2.6 / math.sqrt(nivel)
+        ch = max(ch, lim)  # limita a ampliação (evita imagem borrada)
         return self._caixa(cx, cy, ch, asp)
 
     def aberto(self, t: float) -> np.ndarray:
@@ -604,6 +816,16 @@ class Camera:
         ys1 = max(p.em(t)[1] + 2.4 * p.em(t)[2] for p in self.p)
         ch = max(ys1 - ys0, (xs1 - xs0) / self.asp, 0.72 * H)
         return self._caixa((xs0 + xs1) / 2, (ys0 + ys1) / 2, ch, self.asp, 0.5)
+
+    def apertar(self, r: np.ndarray, nivel: float, cx: float, cy: float) -> np.ndarray:
+        """Aperta o enquadramento r em direção a (cx, cy), sem sair do quadro."""
+        if nivel == 1.0:
+            return r
+        x0, y0, w, h = r
+        nw, nh = w / nivel, h / nivel
+        nx = min(max(cx - (cx - x0) / nivel, 0), self.info.w - nw)
+        ny = min(max(cy - (cy - y0) / nivel, 0), self.info.h - nh)
+        return np.array([nx, ny, nw, nh])
 
     @staticmethod
     def respiro(r: np.ndarray, frac: float, cx: float, cy: float) -> np.ndarray:
@@ -737,8 +959,76 @@ def plano_em(planos: list[Plano], t: float) -> Plano:
     return planos[-1]
 
 
+PALETA_TITULO = ["#FF6B5B", "#7CF29A", "#FFD84D", "#5BD1FF", "#C99BFF"]
+
+
+def escurecer(hexcor: str, k: float = 0.5) -> str:
+    h = hexcor.lstrip("#")
+    return "#" + "".join(f"{int(int(h[i:i + 2], 16) * k):02X}" for i in (0, 2, 4))
+
+
+def eventos_titulo(titulo: str, ate: float, ow: int, oh: int, fonte: str, vertical: bool) -> tuple[list, list]:
+    """Título-gancho: uma palavra (ou bloco entre ' / ') por linha, cores vivas, entrada com pop.
+    Palavras entre ~~ ~~ recebem um risco vermelho animado."""
+    blocos = [b.strip() for b in titulo.split(" / ")] if " / " in titulo else titulo.split()
+    if len(blocos) > 5:
+        blocos = [" ".join(blocos[i:i + 2]) for i in range(0, len(blocos), 2)]
+    # palavra riscada (~~x~~) sempre em linha própria, para o risco ficar certinho sobre ela
+    linhas_t: list[str] = []
+    for bl in blocos:
+        resto: list[str] = []
+        for tok in re.split(r"(~~[^~]+~~)", bl):
+            tok = tok.strip()
+            if not tok:
+                continue
+            if tok.startswith("~~"):
+                if resto:
+                    linhas_t.append(" ".join(resto))
+                    resto = []
+                linhas_t.append(tok)
+            else:
+                resto.append(tok)
+        if resto:
+            linhas_t.append(" ".join(resto))
+    blocos = linhas_t
+    base = min(ow, oh)
+    tam = int(base * (0.185 if vertical else 0.12) * (1 if len(blocos) <= 3 else 0.8))
+    xs = [0.36, 0.62, 0.50, 0.40, 0.60]
+    rots = [4, -3, 0, 3, -2]
+    y0 = oh * (0.12 if vertical else 0.20)
+    ev, sons = [], []
+    for i, bloco in enumerate(blocos):
+        riscar = bloco.startswith("~~") and bloco.endswith("~~")
+        txt = esc_ass(bloco.strip("~"))
+        cor = PALETA_TITULO[i % len(PALETA_TITULO)]
+        largura_est = len(txt) * tam * 0.60
+        x = int(min(max(ow * xs[i % len(xs)], largura_est / 2 + ow * 0.05), ow - largura_est / 2 - ow * 0.05))
+        y = int(y0 + i * tam * 1.02)
+        t0 = 0.25 + i * 0.32
+        if t0 >= ate - 0.3:
+            break
+        ini, fim = ts_ass(t0), ts_ass(ate)
+        anim = ("\\fscx20\\fscy20\\alpha&HFF&\\t(0,120,\\alpha&H00&\\fscx118\\fscy118)"
+                "\\t(120,260,\\fscx100\\fscy100)\\fad(0,300)")
+        ev.append((t0, f"Dialogue: 5,{ini},{fim},Titulo,,0,0,0,,{{\\an5\\pos({x},{y})\\frz{rots[i % 5]}"
+                       f"\\1c{cor_ass(cor)}\\3c{cor_ass(escurecer(cor, 0.45))}{anim}}}{txt}"))
+        sons.append((t0, "pop"))
+        if riscar:
+            t1 = t0 + 0.45
+            w, h = int(largura_est * 1.08), max(8, int(tam * 0.13))
+            ev.append((t1, f"Dialogue: 6,{ts_ass(t1)},{fim},Barra,,0,0,0,,{{\\an5\\pos({x},{y + int(tam * 0.05)})"
+                           f"\\frz{rots[i % 5] - 1}\\1c{cor_ass('#FF3B3B')}\\bord2\\3c{cor_ass('#FFB0A8')}\\blur2"
+                           f"\\fscx0\\t(0,220,\\fscx100)\\fad(0,300)\\p1}}m 0 0 l {w} 0 {w} {h} 0 {h}{{\\p0}}"))
+            sons.append((t1, "swish"))
+    estilo = (f"Style: Titulo,{fonte},{tam},&H00FFFFFF,&H00FFFFFF,&H00000000,&H78000000,-1,0,0,0,100,100,1,0,1,"
+              f"{max(3, int(tam * 0.06))},{max(3, int(tam * 0.07))},5,0,0,0,1")
+    return [estilo] + ev, sons
+
+
 def gerar_ass(path: str, ow: int, oh: int, palavras, planos, pessoas, fonte: str, destaque: str,
-              estilo: str, maiusculas: bool, vertical: bool, cam: Camera) -> None:
+              estilo: str, maiusculas: bool, vertical: bool, cam: Camera,
+              titulo: str | None = None, titulo_ate: float = 3.5, fonte_titulo: str | None = None) -> list:
+    """Escreve o .ass e devolve os eventos sonoros dos textos [(tempo, tipo)]."""
     base = min(ow, oh)
     tam_leg = int(base * (0.068 if vertical else 0.062))
     tam_nome = int(base * 0.052)
@@ -765,9 +1055,15 @@ def gerar_ass(path: str, ow: int, oh: int, palavras, planos, pessoas, fonte: str
         f"Style: Cargo,{fonte},{tam_cargo},&H00141414,&H00141414,{cor_ass(destaque)},&H00000000,-1,0,0,0,100,100,"
         f"0.5,0,3,{int(tam_cargo * 0.32)},0,1,0,0,0,1",
         f"Style: Barra,{fonte},10,{cor_ass(destaque)},{branco},{preto},{preto},0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1",
-        "", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
     ev = []
+    sons: list[tuple[float, str]] = []
+    if titulo:
+        tit, sons_t = eventos_titulo(titulo, titulo_ate, ow, oh, fonte_titulo or fonte, vertical)
+        linhas.append(tit[0])
+        ev += tit[1:]
+        sons += sons_t
+    linhas += ["", "[Events]", "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"]
 
     def y_legenda(pl: Plano) -> int:
         if vertical:
@@ -811,7 +1107,11 @@ def gerar_ass(path: str, ow: int, oh: int, palavras, planos, pessoas, fonte: str
             if j in mostrados or not pessoas[j].nome:
                 continue
             mostrados.add(j)
-            ini = pl.ini + 0.4
+            ini = max(pl.ini + 0.4, titulo_ate + 0.2 if titulo else 0)
+            if ini > pl.fim - 1.5:
+                mostrados.discard(j)
+                continue
+            sons.append((ini, "pop"))
             fim = min(pl.fim - 0.1, ini + 4.5)
             x = int(ow * (0.06 if not vertical else 0.08))
             if vertical and metade is not None:
@@ -839,11 +1139,12 @@ def gerar_ass(path: str, ow: int, oh: int, palavras, planos, pessoas, fonte: str
     linhas += [e[1] for e in ev]
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(linhas) + "\n")
+    return sons
 
 
 # --------------------------------------------------------------------------- render
 
-def renderizar(args, info: Info, planos, pessoas, ow, oh, fps, tmp, ass, voz, musica):
+def renderizar(args, info: Info, planos, pessoas, ow, oh, fps, tmp, ass, voz, musica, efeitos=None):
     vertical = oh > ow
     cam = Camera(info, ow, oh, pessoas, args.zoom, vertical)
     T = args.duracao_transicao
@@ -853,7 +1154,7 @@ def renderizar(args, info: Info, planos, pessoas, ow, oh, fps, tmp, ass, voz, mu
         frac = (t - pl.ini) / max(0.5, pl.fim - pl.ini)
         if pl.tipo == "close":
             cx, cy, s = pessoas[pl.pessoa].em(t)
-            r = Camera.respiro(cam.close(pl.pessoa, t), frac, cx, cy)
+            r = Camera.respiro(cam.close(pl.pessoa, t, nivel=pl.nivel), frac, cx, cy)
             return recortar(img, r, ow, oh), r
         if pl.tipo == "dividido":
             meia = oh // 2
@@ -863,6 +1164,17 @@ def renderizar(args, info: Info, planos, pessoas, ow, oh, fps, tmp, ass, voz, mu
             cv2.line(out, (0, meia), (ow, meia), (20, 20, 20), max(2, oh // 400))
             return out, None
         r = cam.aberto(t)
+        if vertical and len(pessoas) == 1:  # uma pessoa no vertical: altura inteira, centrado nela
+            fx, fy, _ = pessoas[0].em(t)
+            r = cam.apertar(cam._caixa(fx, info.h / 2, info.h, ow / oh, 0.5), pl.nivel, fx, fy)
+            return recortar(img, Camera.respiro(r, frac * 0.6, fx, fy), ow, oh), r
+        if pl.nivel != 1.0:  # "soco" no plano aberto (vídeo de uma pessoa): aperta em direção ao rosto
+            if pessoas:
+                fx, fy, _ = pessoas[0].em(t)
+            else:
+                fx, fy = info.w / 2, info.h * 0.4
+            r = cam.apertar(r, pl.nivel, fx, fy)
+            return recortar(img, Camera.respiro(r, frac * 0.6, fx, fy), ow, oh), r
         if vertical:  # plano aberto vertical: imagem inteira sobre fundo desfocado
             fundo = recortar(img, cam._caixa(info.w / 2, info.h / 2, info.h, ow / oh, 0.5), ow, oh)
             fundo = cv2.GaussianBlur(cv2.resize(fundo, (ow // 8, oh // 8)), (0, 0), 3)
@@ -882,17 +1194,25 @@ def renderizar(args, info: Info, planos, pessoas, ow, oh, fps, tmp, ass, voz, mu
     if args.cor:
         vf = ["eq=contrast=1.05:saturation=1.10:gamma=1.01", "unsharp=5:5:0.45:5:5:0.0", "vignette=PI/6"] + vf
     vf.append("format=yuv420p")
+    entradas_audio = [voz] + ([musica] if musica else []) + ([efeitos] if efeitos else [])
+    fx_idx = 1 + len(entradas_audio) - 1 if efeitos else None
+    partes, mix = [], ["[v1]"]
     if musica:
-        af = ("[1:a]asplit=2[v1][vk];"
-              "[2:a][vk]sidechaincompress=threshold=0.015:ratio=12:attack=20:release=700:makeup=1[md];"
-              "[v1][md]amix=inputs=2:duration=first:normalize=0,"
-              "loudnorm=I=-14:TP=-1.5:LRA=9[a]")
+        partes.append("[1:a]asplit=2[v1][vk];"
+                      "[2:a][vk]sidechaincompress=threshold=0.015:ratio=12:attack=20:release=700:makeup=1[md]")
+        mix.append("[md]")
     else:
-        af = "[1:a]loudnorm=I=-14:TP=-1.5:LRA=9[a]"
+        partes.append("[1:a]anull[v1]")
+    if efeitos:
+        partes.append(f"[{fx_idx}:a]volume={args.volume_efeitos}dB[fx]")
+        mix.append("[fx]")
+    partes.append(f"{''.join(mix)}amix=inputs={len(mix)}:duration=first:normalize=0,"
+                  "loudnorm=I=-14:TP=-1.5:LRA=9[a]")
+    af = ";".join(partes)
     fc = f"[0:v]{','.join(vf)}[v];{af}"
     cmd = ["ffmpeg", "-v", "error", "-stats", "-y",
            "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{ow}x{oh}", "-r", f"{fps}", "-i", "-",
-           "-i", voz] + (["-i", musica] if musica else []) + [
+           ] + [x for a in entradas_audio for x in ("-i", a)] + [
         "-filter_complex", fc, "-map", "[v]", "-map", "[a]",
         "-c:v", "libx264", "-preset", args.preset, "-crf", str(args.crf), "-profile:v", "high",
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart", "-shortest",
@@ -911,13 +1231,14 @@ def renderizar(args, info: Info, planos, pessoas, ow, oh, fps, tmp, ass, voz, mu
             pl = planos[idx]
             out, r = quadro_plano(img, pl, t)
             ant = planos[idx - 1] if idx > 0 else None
-            # entre closes de pessoas diferentes, dissolve curto (uma panorâmica passaria pelo vazio)
-            troca = ant is not None and ant.tipo == pl.tipo == "close" and ant.pessoa != pl.pessoa
-            Tt = T * 0.6 if troca else T
-            if ant is not None and modo != "corte" and t - pl.ini < Tt:
+            # entre closes de pessoas diferentes, dissolve curto (uma panorâmica passaria pelo vazio);
+            # mesmo enquadramento com outro aperto: corte seco
+            tr = tipo_transicao(ant, pl, modo)
+            Tt = T * 0.6 if tr == "fade" else T
+            if tr != "corte" and t - pl.ini < Tt:
                 k = ease((t - pl.ini) / Tt)
                 out_a, r_a = quadro_plano(img, ant, t)
-                if modo == "zoom" and not troca and r is not None and r_a is not None:
+                if tr == "zoom" and r is not None and r_a is not None:
                     out = recortar(img, r_a * (1 - k) + r * k, ow, oh)
                 else:
                     out = cv2.addWeighted(out_a, 1 - k, out, k, 0)
@@ -967,7 +1288,26 @@ def main() -> None:
     ap.add_argument("--preset", default="medium")
     ap.add_argument("--trecho", help="processa só um trecho, ex. 1:00-1:30 (para prévia rápida)")
     ap.add_argument("--so-analise", action="store_true", help="só analisa: gera pessoas.jpg, planos e transcrição")
+    g = ap.add_argument_group("estilo dinâmico (Reels/TikTok)")
+    g.add_argument("--dinamico", action="store_true",
+                   help="atalho: corta pausas, zoom 'soco' no ritmo das frases, planos curtos e efeitos sonoros")
+    g.add_argument("--cortar-pausas", action="store_true", help="remove os silêncios entre as falas")
+    g.add_argument("--pausa-minima", type=float, default=0.45, help="pausas maiores que isso são cortadas (s)")
+    g.add_argument("--ritmo", type=float, default=0.0, help="troca o aperto do zoom a cada ~N s, no início das frases")
+    g.add_argument("--efeitos", action="store_true", help="whoosh nas transições e pop nos textos")
+    g.add_argument("--volume-efeitos", type=float, default=-4.0, help="ganho da faixa de efeitos em dB")
+    g.add_argument("--titulo", help="título-gancho animado no início; ~~palavra~~ sai riscada; ' / ' separa linhas")
+    g.add_argument("--titulo-ate", type=float, default=3.5, help="até quando o título fica na tela (s)")
+    g.add_argument("--fonte-titulo", help="fonte do título (padrão: a mesma das legendas)")
     args = ap.parse_args()
+    if args.dinamico:
+        args.cortar_pausas = True
+        args.efeitos = True
+        args.ritmo = args.ritmo or 2.8
+        args.min_plano = min(args.min_plano, 1.3)
+        args.max_close = min(args.max_close, 6.0)
+        args.abertura = min(args.abertura, 1.5)
+        args.duracao_transicao = min(args.duracao_transicao, 0.35)
 
     for b in ("ffmpeg", "ffprobe"):
         if not shutil.which(b):
@@ -989,6 +1329,8 @@ def main() -> None:
         if info.canais == 0:
             sys.exit("O vídeo não tem áudio; esta edição depende da fala.")
         log(f"Entrada: {info.w}x{info.h} @ {info.fps:g} qps, {info.dur:.1f}s, {info.canais} canal(is) de áudio")
+        with open(os.path.join(pasta, "comando.txt"), "w", encoding="utf-8") as f:
+            f.write(" ".join(f'"{x}"' if " " in x else x for x in sys.argv) + "\n")
 
         # saída
         if args.formato == "vertical":
@@ -1005,37 +1347,9 @@ def main() -> None:
         vertical = oh > ow
         fps = info.fps if info.fps <= 31 else (info.fps / 2 if info.fps >= 48 else info.fps)
 
-        # áudio
+        # 1) transcrição (no tempo do vídeo inteiro; deslocada quando há --trecho)
         bruto = os.path.join(tmp, "analise.wav")
         run(["ffmpeg", "-v", "error", "-y", "-i", args.entrada, "-vn", "-ar", "16000", bruto])
-        voz = os.path.join(tmp, "voz.wav")
-        nivel = os.path.join(tmp, "nivel.wav")  # banda cheia: o chiado agudo conta no ruído
-        run(["ffmpeg", "-v", "error", "-y", "-i", args.entrada, "-vn", "-ac", "1", "-ar", "48000", nivel])
-        fala_db, ruido_db = niveis_audio(nivel)
-        log(f"Tratando a voz (fala {fala_db:.0f} dBFS, ruído de fundo {ruido_db:.0f} dBFS)...")
-        tratar_voz(args.entrada, voz, args.modelo_ruido, args.voz, fala_db, ruido_db)
-
-        n = int(math.ceil(info.dur / JANELA))
-        n_pessoas = args.pessoas or (len(args.nomes) if args.nomes else None)
-        pessoas, mov = analisar_video(args.entrada, info, n_pessoas, pasta)
-        for j, p in enumerate(pessoas):
-            p.nome = args.nomes[j] if j < len(args.nomes) else ""
-            p.cargo = args.cargos[j] if j < len(args.cargos) else ""
-        if args.nomes and len(pessoas) != len(args.nomes):
-            log(f"Atenção: {len(args.nomes)} nomes informados, mas {len(pessoas)} pessoas detectadas.")
-
-        mono16 = os.path.join(tmp, "analise_canais.wav")
-        run(["ffmpeg", "-v", "error", "-y", "-i", args.entrada, "-vn", "-ar", "16000", "-ac", str(min(2, info.canais)), mono16])
-        fala, canais = detectar_fala(mono16, n)
-        if args.falantes:
-            rot = ler_falantes_manuais(args.falantes, n, len(pessoas))
-        else:
-            rot = quem_fala(pessoas, mov, fala, canais, n)
-        planos = planejar(rot, len(pessoas), info.dur, args.min_plano, args.max_close, args.abertura, vertical)
-        salvar_diagnostico_final(pasta, pessoas, planos, info)
-
-        # legendas
-        # palavras sempre no tempo do vídeo inteiro; deslocadas quando há --trecho
         palavras: list[dict] = []
         jtrans = os.path.join(pasta, "transcricao.json")
         if args.legenda == "auto":
@@ -1051,33 +1365,135 @@ def main() -> None:
             palavras = json.load(open(args.legenda, encoding="utf-8"))
         elif args.legenda.lower().endswith(".srt"):
             palavras = palavras_de_srt(args.legenda)
-        if palavras and not args.trecho:
-            if args.legenda != "auto":
-                json.dump(palavras, open(jtrans, "w", encoding="utf-8"), ensure_ascii=False, indent=0)
-            escrever_srt(palavras, base_saida + ".srt")
+        if palavras and not args.trecho and args.legenda not in ("auto",):
+            json.dump(palavras, open(jtrans, "w", encoding="utf-8"), ensure_ascii=False, indent=0)
         if desloc or args.trecho:
             palavras = [dict(p, inicio=p["inicio"] - desloc, fim=p["fim"] - desloc) for p in palavras
                         if p["fim"] > desloc and p["inicio"] < desloc + info.dur]
 
+        # 2) corte de pausas
+        if args.cortar_pausas:
+            nivel0 = os.path.join(tmp, "pausas.wav")
+            run(["ffmpeg", "-v", "error", "-y", "-i", args.entrada, "-vn", "-ac", "1", "-ar", "48000", nivel0])
+            trechos = detectar_trechos_de_fala(nivel0, palavras, args.pausa_minima, info.fps)
+            fica = sum(b - a for a, b in trechos)
+            if trechos and info.dur - fica > 0.5:
+                sem = os.path.join(tmp, "sem_pausas.mkv")
+                log(f"Cortando pausas: {info.dur - fica:.1f}s removidos em {max(0, len(trechos) - 1)} cortes...")
+                cortar_pausas(args.entrada, info, trechos, sem, tmp)
+                args.entrada = sem
+                info = sondar(sem)
+                palavras = mapear_palavras(palavras, trechos)
+            else:
+                log("Sem pausas relevantes para cortar.")
+        if palavras:
+            escrever_srt(palavras, base_saida + ".srt")
+
+        # 3) voz
+        voz = os.path.join(tmp, "voz.wav")
+        nivel = os.path.join(tmp, "nivel.wav")  # banda cheia: o chiado agudo conta no ruído
+        run(["ffmpeg", "-v", "error", "-y", "-i", args.entrada, "-vn", "-ac", "1", "-ar", "48000", nivel])
+        fala_db, ruido_db = niveis_audio(nivel)
+        log(f"Tratando a voz (fala {fala_db:.0f} dBFS, ruído de fundo {ruido_db:.0f} dBFS)...")
+        tratar_voz(args.entrada, voz, args.modelo_ruido, args.voz, fala_db, ruido_db)
+
+        # 4) quem fala e planos
+        n = int(math.ceil(info.dur / JANELA))
+        n_pessoas = args.pessoas or (len(args.nomes) if args.nomes else None)
+        pessoas, mov = analisar_video(args.entrada, info, n_pessoas, pasta)
+        for j, p in enumerate(pessoas):
+            p.nome = args.nomes[j] if j < len(args.nomes) else ""
+            p.cargo = args.cargos[j] if j < len(args.cargos) else ""
+        if args.nomes and len(pessoas) != len(args.nomes):
+            log(f"Atenção: {len(args.nomes)} nomes informados, mas {len(pessoas)} pessoas detectadas.")
+        mono16 = os.path.join(tmp, "analise_canais.wav")
+        run(["ffmpeg", "-v", "error", "-y", "-i", args.entrada, "-vn", "-ar", "16000", "-ac", str(min(2, info.canais)), mono16])
+        fala, canais = detectar_fala(mono16, n)
+        if args.falantes:
+            rot = ler_falantes_manuais(args.falantes, n, len(pessoas))
+        else:
+            rot = quem_fala(pessoas, mov, fala, canais, n)
+        planos = planejar(rot, len(pessoas), info.dur, args.min_plano, args.max_close, args.abertura, vertical)
+        planos = alinhar_cortes(planos, palavras)
+        planos = dinamizar(planos, palavras, args.ritmo, len(pessoas))
+        salvar_diagnostico_final(pasta, pessoas, planos, info)
+
+        # 5) textos
         fonte = escolher_fonte(args.fonte)
         cam = Camera(info, ow, oh, pessoas, args.zoom, vertical)
         ass = os.path.join(pasta, "legendas.ass")
-        gerar_ass(ass, ow, oh, palavras, planos, pessoas, fonte, args.cor_destaque, args.estilo_legenda,
-                  args.maiusculas, vertical, cam)
+        sons = gerar_ass(ass, ow, oh, palavras, planos, pessoas, fonte, args.cor_destaque, args.estilo_legenda,
+                         args.maiusculas, vertical, cam, args.titulo, args.titulo_ate, args.fonte_titulo)
         log(f"Fonte: {fonte}. Legendas: {len(palavras)} palavras. Arquivos de análise em {pasta}")
-        if args.so_analise:
-            return
 
-        musica = None
-        if not args.sem_musica:
+        # 6) trilha e efeitos
+        musica = efeitos = None
+        if not args.sem_musica and not args.so_analise:
             musica = os.path.join(tmp, "musica.wav")
             log("Preparando trilha de fundo...")
             preparar_musica(args.musica, info.dur, musica, args.volume_musica, tmp)
+        if args.efeitos:
+            for i in range(1, len(planos)):
+                tr = tipo_transicao(planos[i - 1], planos[i], args.transicao)
+                if tr != "corte":
+                    sons.append((planos[i].ini + args.duracao_transicao / 2, "whoosh"))
+                elif planos[i].nivel > planos[i - 1].nivel:
+                    sons.append((planos[i].ini, "swish"))
+            efeitos = os.path.join(tmp, "efeitos.wav")
+            gerar_efeitos(efeitos, info.dur, sorted(sons))
+        desenhar_linha_do_tempo(os.path.join(pasta, "linha_do_tempo.png"), info.dur, planos, palavras,
+                                args.titulo_ate if args.titulo else 0, voz, musica, efeitos, len(pessoas))
+        if args.so_analise:
+            return
 
-        renderizar(args, info, planos, pessoas, ow, oh, fps, tmp, ass, voz, musica)
-        log(f"Pronto: {args.saida}")
+        renderizar(args, info, planos, pessoas, ow, oh, fps, tmp, ass, voz, musica, efeitos)
+        log(f"Pronto: {args.saida} ({info.dur:.1f}s)")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def desenhar_linha_do_tempo(path, dur, planos, palavras, titulo_ate, voz, musica, efeitos, k) -> None:
+    """Imagem tipo editor: faixas T (textos), V (planos), A1 voz, A2 trilha, A3 efeitos."""
+    W, rot_w, alt = 1600, 70, 54
+    faixas = [("T", None), ("V", None), ("A1", voz), ("A2", musica), ("A3", efeitos)]
+    img = np.full((len(faixas) * alt + 40, W, 3), 28, np.uint8)
+    px = lambda t: int(rot_w + (W - rot_w - 10) * t / max(dur, 1e-6))  # noqa: E731
+    cores = [(91, 107, 255), (255, 209, 91), (154, 242, 124), (255, 155, 201), (77, 216, 255)]
+    for i, (nome, _) in enumerate(faixas):
+        y = 30 + i * alt
+        cv2.putText(img, nome, (14, y + 32), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+        cv2.rectangle(img, (rot_w, y + 4), (W - 10, y + alt - 4), (40, 40, 40), -1)
+    y = 30
+    if titulo_ate:
+        cv2.rectangle(img, (px(0), y + 8), (px(titulo_ate), y + alt - 8), (255, 155, 201), -1)
+    for fr in agrupar_frases(palavras, 34, 7):
+        cv2.rectangle(img, (px(fr[0]["inicio"]), y + 14), (max(px(fr[-1]["fim"]), px(fr[0]["inicio"]) + 2), y + alt - 14),
+                      (77, 205, 255), -1)
+    y = 30 + alt
+    for pl in planos:
+        cor = (110, 110, 110) if pl.pessoa < 0 else cores[pl.pessoa % len(cores)]
+        if pl.nivel > 1:
+            cor = tuple(min(255, int(c * 1.25)) for c in cor)
+        cv2.rectangle(img, (px(pl.ini) + 1, y + 6), (px(pl.fim) - 1, y + alt - 6), cor, -1)
+    for i, (nome, arq) in enumerate(faixas[2:], start=2):
+        if not arq or not os.path.exists(arq):
+            continue
+        x, sr = ler_wav(arq)
+        m = np.abs(x).max(axis=1)
+        y = 30 + i * alt
+        cor = [(124, 242, 154), (255, 155, 201), (77, 216, 255)][i - 2]
+        colunas = W - rot_w - 10
+        bloco = max(1, len(m) // colunas)
+        picos = m[: bloco * colunas].reshape(-1, bloco).max(axis=1)
+        picos = picos / (picos.max() + 1e-9)
+        meio = y + alt // 2
+        for c, v in enumerate(picos):
+            h = int(v * (alt / 2 - 6))
+            cv2.line(img, (rot_w + c, meio - h), (rot_w + c, meio + h), cor, 1)
+    for seg in range(0, int(dur) + 1, max(1, int(dur // 15) or 1)):
+        cv2.putText(img, f"{seg // 60}:{seg % 60:02d}", (px(seg) - 12, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                    (170, 170, 170), 1)
+    cv2.imwrite(path, img)
 
 
 def salvar_diagnostico_final(pasta: str, pessoas, planos, info) -> None:
@@ -1086,7 +1502,7 @@ def salvar_diagnostico_final(pasta: str, pessoas, planos, info) -> None:
                      "y_medio": round(float(np.median(p.cy))), "tamanho_rosto": round(float(np.median(p.s)))}
                     for p in pessoas],
         "planos": [{"inicio": round(p.ini, 2), "fim": round(p.fim, 2), "tipo": p.tipo,
-                    "pessoa": (p.pessoa + 1 if p.pessoa >= 0 else None)} for p in planos],
+                    "pessoa": (p.pessoa + 1 if p.pessoa >= 0 else None), "zoom": p.nivel} for p in planos],
     }
     json.dump(dados, open(os.path.join(pasta, "planos.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     resumo = {}

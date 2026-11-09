@@ -1,13 +1,47 @@
 ---
 name: edicao-de-video
-description: Edita vídeos com ffmpeg. Edição automática completa de conversas, podcasts e entrevistas (zoom em quem está falando alternando entre as pessoas, transições, voz tratada, legendas animadas palavra a palavra, nome e cargo de cada pessoa, trilha de fundo). Também: cortar, juntar clipes, formato vertical 9:16 para Reels/TikTok/Shorts, legendas (queimadas ou em faixa), texto na tela, logo/marca d'água, trilha de fundo com ducking, tirar silêncios (jump cut), normalizar e limpar áudio, velocidade, fade, comprimir, versão para WhatsApp, GIF, thumbnail. Use sempre que o usuário pedir para editar, cortar, recortar, legendar, converter, redimensionar, comprimir ou preparar um vídeo para redes sociais, mesmo sem dizer "ffmpeg".
+description: Edita vídeos por conversa, sem precisar de editor. O usuário manda o vídeo e pede em linguagem natural ("deixa mais dinâmico", "corta as pausas", "põe legenda e zoom", "coloca um título") e recebe o vídeo pronto. Edição automática completa de vídeos falados (uma pessoa para a câmera, conversas, podcasts e entrevistas): corte de pausas, zoom em quem está falando e zoom "soco" no ritmo das frases, transições com whoosh, voz tratada, legendas animadas palavra a palavra, título-gancho colorido, nome e cargo, trilha de fundo e efeitos sonoros. Também: cortar, juntar clipes, formato vertical 9:16 para Reels/TikTok/Shorts, legendas (queimadas ou em faixa), texto na tela, logo/marca d'água, trilha de fundo com ducking, tirar silêncios (jump cut), normalizar e limpar áudio, velocidade, fade, comprimir, versão para WhatsApp, GIF, thumbnail. Use sempre que o usuário pedir para editar, cortar, recortar, legendar, converter, redimensionar, comprimir ou preparar um vídeo para redes sociais, mesmo sem dizer "ffmpeg".
 ---
 
 # Edição de vídeo
 
-## Conversa, podcast ou entrevista: edição completa automática
+## Editar conversando (o jeito principal de usar)
 
-Quando o vídeo tem pessoas conversando, use `scripts/editar_conversa.py`. Ele entrega, num
+O usuário não precisa saber nenhum comando: ele manda o vídeo e diz o que quer, e você
+traduz o pedido nas opções de `scripts/editar_conversa.py`. Trate cada mensagem como uma
+rodada de edição:
+
+1. Mande o vídeo (uma prévia curta antes, se for longo) e a imagem `linha_do_tempo.png`
+   de `<saida>_analise/`, que mostra as faixas T (textos), V (planos), A1 (voz), A2 (trilha) e
+   A3 (efeitos). Use a ferramenta de enviar arquivos quando houver uma.
+2. Responda numa linha o que mudou ("Pronto! Cortei as pausas: 12 s a menos.").
+3. No próximo pedido, parta do comando anterior, que fica salvo em
+   `<saida>_analise/comando.txt`, e mude só o que foi pedido. A transcrição é reaproveitada,
+   então as rodadas seguintes são rápidas.
+
+| O usuário diz | Opção |
+|---|---|
+| "deixa mais dinâmico", "estilo Reels/TikTok", "mais ritmo" | `--dinamico` (corta pausas, zoom "soco" a cada frase, planos curtos, efeitos) |
+| "mais dinâmico ainda" / "menos agitado" | `--ritmo 2` / `--ritmo 4.5` (segundos entre trocas de zoom) |
+| "corta as pausas", "tira os silêncios", "tira os vácuos" | `--cortar-pausas` (`--pausa-minima 0.3` corta mais, `0.7` mais natural) |
+| "põe legenda" | é o padrão (transcrição automática); "legenda em caixa alta": `--maiusculas` |
+| "põe zoom" | é o padrão (zoom em quem fala); "zoom mais fechado": `--zoom 1.3` |
+| "coloca um título/gancho no começo: sem pagar editor" | `--titulo "sem pagar ~~editor~~"` (riscar a palavra que se nega; ` / ` separa linhas) |
+| "efeito sonoro", "whoosh" / "tira os efeitos" | `--efeitos` / não usar `--efeitos` nem `--dinamico` (ou `--volume-efeitos -60`) |
+| "põe música" / "tira a música" / "música mais baixa" | `--musica arquivo.mp3` ou trilha gerada / `--sem-musica` / `--volume-musica -31` |
+| "melhora o áudio", "tem muito ruído" | `--voz forte` |
+| "pra Reels/TikTok/Stories" | `--formato vertical` · feed: `--formato quadrado` · YouTube: `--formato horizontal` |
+| "coloca meu nome" | `--nomes "Nome" --cargos "Cargo"` |
+| "usa a cor da minha marca" | `--cor-destaque "#HEX"` |
+| "corta do minuto 1 ao 2" | `video.sh cortar` antes, ou `--trecho 1:00-2:00` |
+
+Se o pedido for vago ("deixa bonito", "edita pra mim"), use `--dinamico --formato vertical
+--maiusculas` para redes sociais, ou o padrão para YouTube/podcast, e pergunte só o que não
+dá para adivinhar: o nome que aparece na tela e o título-gancho, se ele quiser um.
+
+## Vídeos falados (uma pessoa, conversa, podcast, entrevista): edição completa automática
+
+Para qualquer vídeo de gente falando, use `scripts/editar_conversa.py`. Ele entrega, num
 comando só:
 - **zoom em quem está falando**, alternando entre as pessoas, com plano aberto de abertura e de
   respiro em falas longas (a cada ~9 s), transição de zoom animado ou dissolve e um leve zoom
@@ -20,7 +54,12 @@ comando só:
 - **nome e cargo** de cada pessoa em lower third animado, na primeira vez que ela aparece;
 - **trilha de fundo** (sua música, ou uma trilha ambiente original gerada) que abaixa sozinha
   quando alguém fala;
-- correção de cor leve, nitidez e vinheta.
+- correção de cor leve, nitidez e vinheta;
+- com `--dinamico`: **pausas cortadas** (emenda sem estalo; a legenda acompanha), **zoom "soco"**
+  alternando a cada frase (com uma pessoa só, alterna normal, close e zoom apertado), cortes
+  sempre no início de uma palavra, e **efeitos sonoros** (whoosh nas transições, pop nos textos);
+- com `--titulo`: **título-gancho** grande e colorido no começo, uma palavra por linha, entrada
+  com "pop" e risco vermelho animado na palavra entre `~~ ~~`.
 
 ### Passo a passo
 
@@ -69,6 +108,11 @@ comando só:
 | `--modelo medium` | transcrição mais precisa (mais lenta). Padrão `small` |
 | `--falantes cortes.csv` | cortes manuais, linhas `inicio,fim,pessoa` (pessoa 0 = plano aberto) |
 | `--sem-cor` | não mexe na cor nem na nitidez |
+| `--dinamico` | atalho para o estilo Reels: `--cortar-pausas --efeitos --ritmo 2.8`, planos curtos, abertura de 1,5 s |
+| `--cortar-pausas --pausa-minima 0.45` | corta silêncios maiores que 0,45 s |
+| `--ritmo 3` | troca o aperto do zoom a cada ~3 s, sempre no início de uma frase |
+| `--efeitos --volume-efeitos -4` | faixa de efeitos sonoros (sintetizados, sem direitos autorais) |
+| `--titulo "texto" --titulo-ate 3.5 --fonte-titulo "Fonte"` | título-gancho animado nos primeiros segundos |
 
 ### Como decide quem está falando
 
