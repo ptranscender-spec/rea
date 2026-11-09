@@ -30,3 +30,13 @@ que edita vídeos por conversa ("deixa mais dinâmico", "corta as pausas", "põe
 cortes de pausa, transições, voz tratada, legendas animadas, título-gancho, nomes, trilha e efeitos sonoros. Também corta, junta, converte para vertical, comprime etc.
 Ela é carregada automaticamente ao abrir o Claude Code nesta pasta; para usar em qualquer projeto,
 copie a pasta para `~/.claude/skills/`.
+
+## Aplicativo para clientes (sem IA, sem custo por uso)
+A pasta [aplicativo](aplicativo/) tem um **Editor de Vídeo** que roda no computador do cliente e abre no
+navegador. Ele usa o mesmo motor da skill, mas com uma tela de opções em vez de conversa, então não
+gasta tokens. Tem duas abas: **Editar vídeo** (pausas, zoom, legenda, título, nomes, música, efeitos,
+imagens de apoio) e **Post → Vídeo** (marca os blocos da arte com o mouse e gera o Reels).
+
+Para gerar o pacote de entrega: `python3 aplicativo/empacotar.py` → `dist/EditorDeVideo.zip`.
+O cliente descompacta e dá dois cliques em `iniciar.bat` (Windows) ou `iniciar.command` (Mac).
+Na primeira vez ele instala Python, ffmpeg e as bibliotecas sozinho. Veja `aplicativo/LEIA-ME.txt`.

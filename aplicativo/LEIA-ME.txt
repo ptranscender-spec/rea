@@ -1,0 +1,30 @@
+EDITOR DE VÍDEO
+===============
+
+Edita vídeos falados e transforma artes de post em Reels, no seu computador,
+sem internet e sem custo por uso.
+
+COMO ABRIR
+  Windows: dois cliques em  iniciar.bat
+  Mac:     dois cliques em  iniciar.command
+           (se o Mac bloquear: botão direito > Abrir)
+  Linux:   bash iniciar.sh
+
+Na primeira vez ele instala o que precisa (Python, ffmpeg e bibliotecas). Isso leva
+alguns minutos e precisa de internet. Depois abre sozinho no navegador.
+Para fechar, feche a janela preta.
+
+O QUE FAZ
+  Aba "Editar vídeo": corta pausas, dá zoom em quem fala, põe legenda animada,
+  título, nomes, música, efeitos sonoros e imagens de apoio. Gere primeiro a prévia
+  de 30 s e depois o vídeo completo.
+  Aba "Post -> Vídeo": envie a arte, marque a foto, o logo e os blocos de texto,
+  e gere o Reels animado.
+
+ONDE FICAM OS VÍDEOS
+  Na pasta "EditorDeVideo" dentro da sua pasta de usuário.
+
+DICAS
+  - A legenda automática baixa um modelo de transcrição na primeira vez (precisa de internet).
+  - Vídeos longos levam mais ou menos 1,5 vez a duração do vídeo para renderizar.
+  - Para a fonte ficar mais bonita, instale a fonte gratuita Montserrat.

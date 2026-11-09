@@ -1364,7 +1364,7 @@ def renderizar(args, info: Info, planos, pessoas, ow, oh, fps, tmp, ass, voz, mu
                   "loudnorm=I=-14:TP=-1.5:LRA=9[a]")
     af = ";".join(partes)
     fc = f"[0:v]{','.join(vf)}[v];{af}"
-    cmd = ["ffmpeg", "-v", "error", "-stats", "-y",
+    cmd = ["ffmpeg", "-v", "error", "-y",
            "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{ow}x{oh}", "-r", f"{fps}", "-i", "-",
            ] + [x for a in entradas_audio for x in ("-i", a)] + [
         "-filter_complex", fc, "-map", "[v]", "-map", "[a]",
@@ -1400,7 +1400,7 @@ def renderizar(args, info: Info, planos, pessoas, ow, oh, fps, tmp, ass, voz, mu
                 if b.ini <= t < b.fim:
                     out = quadro_broll(b, t, out, ow, oh, fps)
             enc.stdin.write(np.ascontiguousarray(out).tobytes())
-            if n % int(fps * 10) == 0:
+            if n % int(fps * 2) == 0:
                 print(f"\r[conversa] {100 * n / max(1, total):5.1f}%", end="", flush=True)
     finally:
         enc.stdin.close()

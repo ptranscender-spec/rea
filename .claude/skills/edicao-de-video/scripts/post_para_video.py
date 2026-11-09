@@ -314,7 +314,7 @@ def main() -> None:
             cv2.rectangle(quadro, (0, oh - 12), (ow, oh), (25, 25, 25), -1)
             cv2.rectangle(quadro, (0, oh - 12), (int(ow * prog), oh), cor, -1)
             enc.stdin.write(quadro.tobytes())
-            if n % (fps * 5) == 0:
+            if n % (fps * 2) == 0:
                 print(f"\r[post] {100 * n / total:5.1f}%", end="", flush=True)
         enc.stdin.close()
         enc.wait()
