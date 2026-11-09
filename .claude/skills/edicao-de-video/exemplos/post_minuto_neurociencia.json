@@ -1,0 +1,17 @@
+{
+  "imagem": "arte_minuto_neurociencia.png",
+  "fundo": [0, 330, 445, 1130],
+  "logo": [470, 15, 760, 232],
+  "abertura": 2.6,
+  "cor": "#E5B43A",
+  "cabecalho_y": 0.52,
+  "cenas": [
+    {"regiao": [330, 232, 1045, 458], "duracao": 3.2, "entrada": "pop", "y": 0.66, "largura": 0.94},
+    {"regiao": [440, 472, 1040, 670], "duracao": 4.5, "entrada": "pop", "y": 0.62, "largura": 0.94, "fixar": true, "pulso": true},
+    {"regiao": [445, 672, 1020, 802], "duracao": 5.0, "entrada": "direita", "y": 0.76, "largura": 0.96},
+    {"regiao": [445, 808, 1020, 968], "duracao": 5.5, "entrada": "direita", "y": 0.76, "largura": 0.96},
+    {"regiao": [445, 974, 1020, 1128], "duracao": 5.5, "entrada": "direita", "y": 0.76, "largura": 0.96},
+    {"regiao": [368, 1148, 1084, 1298], "duracao": 6.5, "entrada": "baixo", "y": 0.70, "largura": 0.98, "limpar": true, "pulso": true}
+  ],
+  "final": 4
+}

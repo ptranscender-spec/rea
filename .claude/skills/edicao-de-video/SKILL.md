@@ -1,6 +1,6 @@
 ---
 name: edicao-de-video
-description: Edita vídeos por conversa, sem precisar de editor. O usuário manda o vídeo e pede em linguagem natural ("deixa mais dinâmico", "corta as pausas", "põe legenda e zoom", "coloca um título") e recebe o vídeo pronto. Edição automática completa de vídeos falados (uma pessoa para a câmera, conversas, podcasts e entrevistas): corte de pausas, zoom em quem está falando e zoom "soco" no ritmo das frases, transições com whoosh, voz tratada, legendas animadas palavra a palavra, título-gancho colorido, nome e cargo, trilha de fundo, efeitos sonoros e imagens/cenas de apoio (B-roll, inclusive geradas no Higgsfield ou no Canva) encaixadas na palavra certa da fala. Também: cortar, juntar clipes, formato vertical 9:16 para Reels/TikTok/Shorts, legendas (queimadas ou em faixa), texto na tela, logo/marca d'água, trilha de fundo com ducking, tirar silêncios (jump cut), normalizar e limpar áudio, velocidade, fade, comprimir, versão para WhatsApp, GIF, thumbnail. Use sempre que o usuário pedir para editar, cortar, recortar, legendar, converter, redimensionar, comprimir ou preparar um vídeo para redes sociais, mesmo sem dizer "ffmpeg".
+description: Edita vídeos por conversa, sem precisar de editor. O usuário manda o vídeo e pede em linguagem natural ("deixa mais dinâmico", "corta as pausas", "põe legenda e zoom", "coloca um título") e recebe o vídeo pronto. Edição automática completa de vídeos falados (uma pessoa para a câmera, conversas, podcasts e entrevistas): corte de pausas, zoom em quem está falando e zoom "soco" no ritmo das frases, transições com whoosh, voz tratada, legendas animadas palavra a palavra, título-gancho colorido, nome e cargo, trilha de fundo, efeitos sonoros e imagens/cenas de apoio (B-roll, inclusive geradas no Higgsfield ou no Canva) encaixadas na palavra certa da fala. Transforma arte de post (imagem com título e tópicos) em vídeo animado para Reels. Também: cortar, juntar clipes, formato vertical 9:16 para Reels/TikTok/Shorts, legendas (queimadas ou em faixa), texto na tela, logo/marca d'água, trilha de fundo com ducking, tirar silêncios (jump cut), normalizar e limpar áudio, velocidade, fade, comprimir, versão para WhatsApp, GIF, thumbnail. Use sempre que o usuário pedir para editar, cortar, recortar, legendar, converter, redimensionar, comprimir ou preparar um vídeo para redes sociais, mesmo sem dizer "ffmpeg".
 ---
 
 # Edição de vídeo
@@ -39,6 +39,28 @@ rodada de edição:
 Se o pedido for vago ("deixa bonito", "edita pra mim"), use `--dinamico --formato vertical
 --maiusculas` para redes sociais, ou o padrão para YouTube/podcast, e pergunte só o que não
 dá para adivinhar: o nome que aparece na tela e o título-gancho, se ele quiser um.
+
+## Arte de post → vídeo animado (Reels)
+
+Quando o usuário manda uma **arte/post** (imagem com título, tópicos, dica, logo) e pede um
+vídeo, use `scripts/post_para_video.py`:
+
+1. Desenhe uma grade de coordenadas sobre a imagem (OpenCV, linhas a cada 100 px) e olhe o
+   resultado para localizar cada bloco: logo, selo/título, pergunta, cada tópico, dica e a
+   região da foto da pessoa (só a foto, **sem** texto da arte, senão aparece duplicado ao fundo).
+2. Escreva o `roteiro.json` (o formato está no topo do script). A ordem de leitura vira a ordem
+   das cenas. Dê de 4 a 6 s para cada bloco de texto (tempo de leitura) e marque a pergunta
+   principal com `"fixar": true` para ela ficar como cabeçalho enquanto os tópicos passam.
+3. Componha para **não cobrir o rosto**: com a foto no fundo, o rosto fica na metade de cima
+   (ajuste a região `fundo`) e os cartões entram embaixo (`y` 0.62 a 0.78, `cabecalho_y` ≈ 0.52).
+4. Rode `python3 post_para_video.py roteiro.json -o reels.mp4`, extraia 4 ou 5 quadros e confira
+   se o texto está legível, nada cobre o rosto e não aparece texto duplicado no fundo.
+
+Opções: `--narracao audio.mp3` (a pessoa grava a leitura; a trilha abaixa sob a voz e as cenas
+se esticam para acompanhar), `--musica`, `--sem-musica`, `--sem-efeitos`, `--formato 4x5|quadrado`.
+O resultado tem logo de abertura, cartões com entrada animada (pop ou deslizando), zoom lento
+na foto, barra de progresso na cor da marca, arte completa no final, trilha e efeitos.
+Exemplo completo: `exemplos/post_minuto_neurociencia.json`.
 
 ## Imagens e cenas de apoio (B-roll), com Higgsfield e Canva
 
