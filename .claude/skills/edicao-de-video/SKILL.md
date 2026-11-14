@@ -40,6 +40,15 @@ Se o pedido for vago ("deixa bonito", "edita pra mim"), use `--dinamico --format
 --maiusculas` para redes sociais, ou o padrão para YouTube/podcast, e pergunte só o que não
 dá para adivinhar: o nome que aparece na tela e o título-gancho, se ele quiser um.
 
+## Vídeos grandes pelo Google Drive
+
+Anexos grandes (acima de ~30 MB) costumam falhar no app. Peça ao usuário para subir o vídeo no
+Google Drive, compartilhar como **"Qualquer pessoa com o link"** e colar o link na conversa. Baixe com:
+`python3 scripts/baixar_drive.py "<link>" pasta/`. O conector do Drive devolve o arquivo em
+base64 dentro da conversa e não serve para vídeo. Num ambiente na nuvem, os hosts
+`drive.google.com` e `drive.usercontent.google.com` precisam estar liberados; para a legenda
+automática, `huggingface.co` e os servidores de arquivos dele (ex.: `us.aws.cdn.hf.co`).
+
 ## Arte de post → vídeo animado (Reels)
 
 Quando o usuário manda uma **arte/post** (imagem com título, tópicos, dica, logo) e pede um
