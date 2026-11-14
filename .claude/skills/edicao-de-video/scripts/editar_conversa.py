@@ -64,7 +64,8 @@ class Info:
 def sondar(path: str) -> Info:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries",
-         "stream=codec_type,width,height,avg_frame_rate,r_frame_rate,channels:format=duration",
+         "stream=codec_type,width,height,avg_frame_rate,r_frame_rate,channels:stream_tags=rotate"
+         ":stream_side_data=rotation:format=duration",
          "-of", "json", path], check=True, capture_output=True, text=True).stdout
     j = json.loads(out)
     v = next((s for s in j["streams"] if s["codec_type"] == "video"), None)
@@ -78,8 +79,18 @@ def sondar(path: str) -> Info:
 
     fps = frac(v.get("avg_frame_rate")) or frac(v.get("r_frame_rate")) or 30.0
     fps = min(max(round(fps * 1000) / 1000, 12.0), 60.0)
-    return Info(int(v["width"]), int(v["height"]), fps, float(j["format"]["duration"]),
-                int(a["channels"]) if a else 0)
+    w, h = int(v["width"]), int(v["height"])
+    # celular grava "deitado" e marca o giro; o ffmpeg já entrega os quadros girados,
+    # então largura e altura precisam ser trocadas para 90/270 graus
+    giro = 0.0
+    for sd in v.get("side_data_list", []) or []:
+        if "rotation" in sd:
+            giro = float(sd["rotation"])
+    if not giro and (v.get("tags") or {}).get("rotate"):
+        giro = float(v["tags"]["rotate"])
+    if int(round(abs(giro))) % 180 == 90:
+        w, h = h, w
+    return Info(w, h, fps, float(j["format"]["duration"]), int(a["channels"]) if a else 0)
 
 
 def ler_quadros(path: str, w: int, h: int, fps: float, gray: bool = False):
@@ -330,6 +341,56 @@ def serie_suave(grupo, n: int, col: int) -> np.ndarray:
     return np.convolve(pad, np.ones(k) / k, mode="valid")
 
 
+def achar_corpos(g: np.ndarray, hog) -> list[tuple[float, float, float, float]]:
+    """Pessoas de corpo inteiro/meio corpo (detector HOG embutido no OpenCV), em coordenadas de g."""
+    h, w = g.shape
+    brutos = []
+    for alvo in (240, 360):  # pessoas grandes no quadro aparecem nas escalas menores
+        k = alvo / h
+        peq = cv2.resize(g, (max(64, int(w * k)), alvo))
+        caixas, pesos = hog.detectMultiScale(peq, winStride=(4, 4), padding=(16, 16), scale=1.04)
+        for (x, y, ww, hh), p in zip(caixas, np.ravel(pesos) if len(caixas) else []):
+            if p > 0.35 and hh / k > 0.3 * h:
+                brutos.append((float(p), x / k, y / k, (x + ww) / k, (y + hh) / k))
+    brutos.sort(reverse=True)
+    out: list[tuple[float, float, float, float]] = []
+    for p, x0, y0, x1, y1 in brutos:  # junta caixas sobrepostas
+        dup = False
+        for a0, b0, a1, b1 in out:
+            inter = max(0, min(x1, a1) - max(x0, a0)) * max(0, min(y1, b1) - max(y0, b0))
+            if inter > 0.4 * min((x1 - x0) * (y1 - y0), (a1 - a0) * (b1 - b0)):
+                dup = True
+                break
+        if not dup:
+            out.append((x0, y0, x1, y1))
+    return out
+
+
+def filtrar_com_corpos(dets, corpos, n_quadros: int):
+    """Descarta "rostos" fora de qualquer corpo (logos, quadros, objetos) e, se um corpo não tiver
+    rosto detectado (pessoa de perfil ou longe), estima a cabeça pelo corpo."""
+    if len(corpos) < max(2, 0.3 * n_quadros):
+        return dets  # sem corpos confiáveis (ex.: pessoas sentadas, close): mantém só os rostos
+    por_t: dict[float, list] = {}
+    for c in corpos:
+        por_t.setdefault(c[0], []).append(c[1:])
+    def dentro(d):
+        for x0, y0, x1, y1 in por_t.get(d[0], []):
+            # rosto no terço de cima do corpo e perto do centro dele
+            if abs(d[1] - (x0 + x1) / 2) <= 0.3 * (x1 - x0) and y0 - 0.05 * (y1 - y0) <= d[2] <= y0 + 0.33 * (y1 - y0):
+                return True
+        return False
+    bons = [d for d in dets if dentro(d)]
+    # cabeça estimada para corpos sem rosto naquele instante
+    for t, lista in por_t.items():
+        for x0, y0, x1, y1 in lista:
+            tem = any(d[0] == t and x0 <= d[1] <= x1 and y0 - 0.05 * (y1 - y0) <= d[2] <= y0 + 0.33 * (y1 - y0) for d in bons)
+            if not tem:
+                hh = y1 - y0
+                bons.append((t, (x0 + x1) / 2, y0 + 0.13 * hh, 0.13 * hh))
+    return bons
+
+
 def analisar_video(path: str, info: Info, n_forcado: int | None, pasta: str):
     aw = min(960, info.w)
     ah = int(round(info.h * aw / info.w / 2) * 2)
@@ -339,14 +400,19 @@ def analisar_video(path: str, info: Info, n_forcado: int | None, pasta: str):
     dets: list[tuple[float, float, float, float]] = []
     quadros_det: list[tuple[float, np.ndarray]] = []
     log(f"Analisando rostos e bocas ({aw}x{ah}, {ANALISE_FPS} qps)...")
-    # 1ª passada: detecção de rostos a cada 0,5 s
+    corpos: list[tuple[float, float, float, float, float]] = []
+    n_det = 0
+    # 1ª passada: detecção de rostos e corpos a cada 0,5 s
     for i, g in enumerate(ler_quadros(path, aw, ah, ANALISE_FPS, gray=True)):
         if i % 5 == 0:
             t = i * JANELA
+            n_det += 1
             for cx, cy, s in achar_rostos(g, det):
                 dets.append((t, cx, cy, s))
-            if i % 50 == 0:
+            if i % 50 == 0 or not quadros_det:
                 quadros_det.append((t, g))
+    # (filtrar_com_corpos fica disponível, mas desligado: com o detector HOG ele piorou os
+    #  casos de pessoas sentadas; a melhoria certa é um detector de rostos moderno)
     grupos = agrupar_pessoas(dets, aw, n_forcado)
     pessoas = [Pessoa(j, serie_suave(g, n, 1) * esc, serie_suave(g, n, 2) * esc, serie_suave(g, n, 3) * esc)
                for j, g in enumerate(grupos)]
@@ -1030,7 +1096,13 @@ def transcrever(audio: str, idioma: str, modelo: str) -> list[dict]:
         log(f"Transcrevendo com faster-whisper ({modelo})... pode levar alguns minutos.")
         try:
             m = WhisperModel(modelo, device="auto", compute_type="int8")
-            segs, _ = m.transcribe(audio, language=idioma, word_timestamps=True, vad_filter=True,
+            # passa o áudio já decodificado (evita incompatibilidades da biblioteca de leitura de áudio)
+            x, sr = ler_wav(audio)
+            mono = x.mean(axis=1).astype(np.float32)
+            if sr != 16000:
+                idx = np.arange(0, len(mono), sr / 16000)
+                mono = np.interp(idx, np.arange(len(mono)), mono).astype(np.float32)
+            segs, _ = m.transcribe(mono, language=idioma, word_timestamps=True, vad_filter=True,
                                    beam_size=5, condition_on_previous_text=False)
             return [{"inicio": round(w.start, 3), "fim": round(w.end, 3), "palavra": w.word.strip()}
                     for s in segs for w in (s.words or []) if w.word.strip()]
