@@ -1,4 +1,4 @@
-import { hojeSP, deIso, iso, calcularPrazo } from './util.js';
+import { hojeSP, deIso, iso, calcularPrazo, hashSenha } from './util.js';
 
 // Gera dígitos verificadores válidos para os dados fictícios.
 function cpf(base9) {
@@ -110,7 +110,20 @@ export function carregarDemo(db, usuario) {
       lanc('despesa', 'Despesas do escritório', 'Software, internet e telefone', 380, mes(i, 12), i < 0 || hoje.getDate() >= 12 ? mes(i, 12) : null, 'Cartão', null, null, null, null, null);
     }
     lanc('despesa', 'Custas processuais', 'Preparo da apelação — TRF-4', 1150.4, dia(0), null, 'Boleto', c5, p5, null, null, null);
+    // Portal do cliente de demonstração (Mariana) com conversa iniciada
+    const emailPortal = `mariana.demo.${e}@exemplo.com.br`;
+    q('UPDATE clientes SET email = ?, portal_ativo = 1, portal_senha_hash = ? WHERE id = ?').run(emailPortal, hashSenha('cliente123'), c1);
+    q('UPDATE andamentos SET visivel_cliente = 0 WHERE processo_id = ? AND descricao LIKE ?').run(p1, 'Citação%');
+    const msg = (autor, texto, minAtras, lida) => q(`INSERT INTO mensagens (escritorio_id, cliente_id, autor, usuario_id, texto, lida, criado_em) VALUES (?,?,?,?,?,?, datetime('now', ?))`)
+      .run(e, c1, autor, autor === 'escritorio' ? eu : null, texto, lida, `-${minAtras} minutes`);
+    msg('escritorio', 'Olá, Mariana! Seu acesso ao portal está liberado. Por aqui você acompanha o processo e fala com a gente.', 2880, 1);
+    msg('cliente', 'Obrigada! Vi que o banco apresentou contestação. Isso atrasa muito o processo?', 1500, 1);
+    msg('escritorio', 'É uma etapa normal. Vamos apresentar a réplica dentro do prazo e depois o juiz marca a audiência.', 1440, 1);
+    msg('cliente', 'Perfeito. Preciso levar algum documento na audiência?', 30, 0);
     db.exec('COMMIT');
   } catch (err) { db.exec('ROLLBACK'); throw err; }
-  return { mensagem: 'Dados de demonstração carregados: 5 clientes, 6 processos, prazos, agenda e financeiro.' };
+  return {
+    mensagem: 'Dados de demonstração carregados: 5 clientes, 6 processos, prazos, agenda, financeiro e portal do cliente.',
+    portal: { email: `mariana.demo.${e}@exemplo.com.br`, senha: 'cliente123' },
+  };
 }

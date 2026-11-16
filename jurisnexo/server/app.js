@@ -9,6 +9,7 @@ import {
   calcularPrazo, feriadosNacionais, hojeSP, novoToken, iso, deIso,
 } from './util.js';
 import { carregarDemo } from './demo.js';
+import { rotasPortal } from './portal.js';
 
 const DIAS_SESSAO = 14;
 const COLUNAS_PADRAO = ['Novo', 'Em andamento', 'Aguardando cliente', 'Aguardando tribunal', 'Concluído'];
@@ -113,6 +114,7 @@ export function criarApp(db) {
     return { usuario: publico(req.u), escritorio: esc };
   }));
 
+  app.use('/api/portal', rotasPortal(db));
   app.use('/api', logado);
 
   // ---------- Equipe ----------
@@ -199,6 +201,7 @@ export function criarApp(db) {
     return [tipo, nome, doc, limpar(b.rg), limpar(b.nascimento), limpar(b.telefone), limpar(b.whatsapp), email,
       limpar(b.cep), limpar(b.logradouro), limpar(b.numero), limpar(b.complemento), limpar(b.bairro), limpar(b.cidade), limpar(b.uf)?.toUpperCase() ?? null, limpar(b.observacoes)];
   };
+  const semSegredos = (c) => { if (c) { c.portal_pendente = !!c.portal_token && !c.portal_ativo; delete c.portal_senha_hash; delete c.portal_token; } return c; };
   const CAMPOS_CLI = 'tipo, nome, documento, rg, nascimento, telefone, whatsapp, email, cep, logradouro, numero, complemento, bairro, cidade, uf, observacoes';
 
   app.get('/api/clientes', r((req) => {
@@ -211,10 +214,11 @@ export function criarApp(db) {
     const total = q(`SELECT COUNT(*) n FROM clientes WHERE ${where}`).get(...p).n;
     const itens = q(`SELECT c.*, (SELECT COUNT(*) FROM processos WHERE cliente_id = c.id) AS n_processos
                      FROM clientes c WHERE ${where} ORDER BY ${ordem} LIMIT ? OFFSET ?`).all(...p, por, (pagina - 1) * por);
+    itens.forEach(semSegredos);
     return { itens, total, pagina, paginas: Math.max(1, Math.ceil(total / por)) };
   }));
   app.get('/api/clientes/:id', r((req) => {
-    const c = doEscritorio('clientes', req.params.id, req);
+    const c = semSegredos(doEscritorio('clientes', req.params.id, req));
     c.processos = q('SELECT id, titulo, numero_cnj, status, area FROM processos WHERE cliente_id = ? ORDER BY criado_em DESC').all(c.id);
     c.eventos = q('SELECT * FROM eventos WHERE cliente_id = ? ORDER BY inicio DESC LIMIT 20').all(c.id);
     if (req.u.papel !== 'estagiario') c.lancamentos = q('SELECT * FROM lancamentos WHERE cliente_id = ? ORDER BY vencimento DESC').all(c.id);
@@ -237,6 +241,47 @@ export function criarApp(db) {
     const c = doEscritorio('clientes', req.params.id, req);
     q('DELETE FROM clientes WHERE id = ?').run(c.id);
     auditar(req, 'cliente', c.id, 'excluiu', { nome: c.nome });
+    return { ok: true };
+  }));
+
+  app.post('/api/clientes/:id/portal', r((req) => {
+    const c = doEscritorio('clientes', req.params.id, req);
+    if (!c.email) erro(400, 'Cadastre o e-mail do cliente antes de liberar o portal. Ele será usado para entrar.');
+    const token = novoToken().slice(0, 32);
+    q('UPDATE clientes SET portal_token = ? WHERE id = ?').run(token, c.id);
+    auditar(req, 'cliente', c.id, 'gerou link do portal');
+    return { token };
+  }));
+  app.delete('/api/clientes/:id/portal', r((req) => {
+    const c = doEscritorio('clientes', req.params.id, req);
+    q('UPDATE clientes SET portal_ativo = 0, portal_token = NULL, portal_senha_hash = NULL WHERE id = ?').run(c.id);
+    q('DELETE FROM sessoes_portal WHERE cliente_id = ?').run(c.id);
+    auditar(req, 'cliente', c.id, 'desativou o portal');
+    return { ok: true };
+  }));
+
+  // ---------- Mensagens com clientes ----------
+  app.get('/api/mensagens', r((req) => q(`SELECT c.id AS cliente_id, c.nome, c.portal_ativo,
+        (SELECT texto FROM mensagens WHERE cliente_id = c.id ORDER BY id DESC LIMIT 1) AS ultima,
+        (SELECT autor FROM mensagens WHERE cliente_id = c.id ORDER BY id DESC LIMIT 1) AS ultimo_autor,
+        (SELECT MAX(criado_em) FROM mensagens WHERE cliente_id = c.id) AS quando,
+        (SELECT COUNT(*) FROM mensagens WHERE cliente_id = c.id AND autor = 'cliente' AND lida = 0) AS nao_lidas
+      FROM clientes c WHERE c.escritorio_id = ? AND (c.portal_ativo = 1 OR EXISTS (SELECT 1 FROM mensagens WHERE cliente_id = c.id))
+      ORDER BY quando IS NULL, quando DESC, c.nome`).all(E(req))));
+  app.get('/api/mensagens/nao-lidas', r((req) => ({ n: q("SELECT COUNT(*) n FROM mensagens WHERE escritorio_id = ? AND autor = 'cliente' AND lida = 0").get(E(req)).n })));
+  app.get('/api/mensagens/:clienteId', r((req) => {
+    const c = doEscritorio('clientes', req.params.clienteId, req);
+    const itens = q(`SELECT m.id, m.autor, m.texto, m.criado_em, m.lida, u.nome AS usuario_nome FROM mensagens m LEFT JOIN usuarios u ON u.id = m.usuario_id
+                     WHERE m.cliente_id = ? ORDER BY m.id DESC LIMIT 300`).all(c.id).reverse();
+    q("UPDATE mensagens SET lida = 1 WHERE cliente_id = ? AND autor = 'cliente' AND lida = 0").run(c.id);
+    return { cliente: { id: c.id, nome: c.nome, portal_ativo: c.portal_ativo }, itens };
+  }));
+  app.post('/api/mensagens/:clienteId', r((req) => {
+    const c = doEscritorio('clientes', req.params.clienteId, req);
+    const texto = limpar(req.body.texto);
+    if (!texto) erro(400, 'Escreva a mensagem.');
+    if (texto.length > 4000) erro(400, 'Mensagem muito longa.');
+    q("INSERT INTO mensagens (escritorio_id, cliente_id, autor, usuario_id, texto) VALUES (?,?, 'escritorio', ?, ?)").run(E(req), c.id, req.u.id, texto);
     return { ok: true };
   }));
 
@@ -279,7 +324,7 @@ export function criarApp(db) {
     p.responsavel = p.responsavel_id ? q('SELECT id, nome FROM usuarios WHERE id = ?').get(p.responsavel_id) : null;
     p.andamentos = q('SELECT a.*, u.nome AS autor FROM andamentos a LEFT JOIN usuarios u ON u.id = a.criado_por WHERE processo_id = ? ORDER BY data DESC, id DESC').all(p.id);
     p.prazos = q('SELECT pz.*, u.nome AS responsavel_nome FROM prazos pz LEFT JOIN usuarios u ON u.id = pz.responsavel_id WHERE processo_id = ? ORDER BY vencimento').all(p.id);
-    p.documentos = q('SELECT d.id, d.nome, d.categoria, d.tamanho, d.tipo_mime, d.criado_em, u.nome AS enviado_por_nome FROM documentos d LEFT JOIN usuarios u ON u.id = d.enviado_por WHERE processo_id = ? ORDER BY d.criado_em DESC').all(p.id);
+    p.documentos = q('SELECT d.id, d.nome, d.categoria, d.tamanho, d.tipo_mime, d.criado_em, d.compartilhado, d.enviado_por_cliente, u.nome AS enviado_por_nome FROM documentos d LEFT JOIN usuarios u ON u.id = d.enviado_por WHERE processo_id = ? ORDER BY d.criado_em DESC').all(p.id);
     if (req.u.papel !== 'estagiario') p.lancamentos = q('SELECT * FROM lancamentos WHERE processo_id = ? ORDER BY vencimento').all(p.id);
     p.historico = q(`SELECT a.acao, a.em, a.detalhes, u.nome AS usuario FROM auditoria a LEFT JOIN usuarios u ON u.id = a.usuario_id
                      WHERE a.escritorio_id = ? AND a.entidade = 'processo' AND a.entidade_id = ? ORDER BY a.em DESC LIMIT 30`).all(E(req), p.id);
@@ -327,9 +372,16 @@ export function criarApp(db) {
     const p = doEscritorio('processos', req.params.id, req);
     const data = limpar(req.body.data), desc = limpar(req.body.descricao);
     if (!data || !desc) erro(400, 'Informe a data e a descrição do andamento.');
-    const id = Number(q('INSERT INTO andamentos (processo_id, data, descricao, criado_por) VALUES (?,?,?,?)').run(p.id, data, desc, req.u.id).lastInsertRowid);
+    const visivel = req.body.visivel_cliente === false ? 0 : 1;
+    const id = Number(q('INSERT INTO andamentos (processo_id, data, descricao, criado_por, visivel_cliente) VALUES (?,?,?,?,?)').run(p.id, data, desc, req.u.id, visivel).lastInsertRowid);
     auditar(req, 'processo', p.id, 'registrou andamento');
     return { id };
+  }));
+  app.patch('/api/andamentos/:id', r((req) => {
+    const a = q('SELECT a.* FROM andamentos a JOIN processos p ON p.id = a.processo_id WHERE a.id = ? AND p.escritorio_id = ?').get(Number(req.params.id), E(req));
+    if (!a) erro(404, 'Andamento não encontrado.');
+    q('UPDATE andamentos SET visivel_cliente = ? WHERE id = ?').run(req.body.visivel_cliente ? 1 : 0, a.id);
+    return { ok: true };
   }));
   app.delete('/api/andamentos/:id', r((req) => {
     const a = q('SELECT a.* FROM andamentos a JOIN processos p ON p.id = a.processo_id WHERE a.id = ? AND p.escritorio_id = ?').get(Number(req.params.id), E(req));
@@ -351,8 +403,8 @@ export function criarApp(db) {
     try { p = doEscritorio('processos', req.params.id, req); } catch (e) { if (req.file) fs.rmSync(req.file.path, { force: true }); throw e; }
     if (!req.file) erro(400, 'Selecione um arquivo.');
     const nomeOriginal = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
-    const id = Number(q('INSERT INTO documentos (processo_id, nome, categoria, arquivo, tamanho, tipo_mime, enviado_por) VALUES (?,?,?,?,?,?,?)')
-      .run(p.id, limpar(req.body.nome) || nomeOriginal, limpar(req.body.categoria) || 'Outros', req.file.filename, req.file.size, req.file.mimetype, req.u.id).lastInsertRowid);
+    const id = Number(q('INSERT INTO documentos (processo_id, nome, categoria, arquivo, tamanho, tipo_mime, enviado_por, compartilhado) VALUES (?,?,?,?,?,?,?,?)')
+      .run(p.id, limpar(req.body.nome) || nomeOriginal, limpar(req.body.categoria) || 'Outros', req.file.filename, req.file.size, req.file.mimetype, req.u.id, req.body.compartilhado === '1' ? 1 : 0).lastInsertRowid);
     auditar(req, 'processo', p.id, 'anexou documento', { nome: limpar(req.body.nome) || nomeOriginal });
     return { id };
   }));
@@ -364,6 +416,12 @@ export function criarApp(db) {
   app.get('/api/documentos/:id/arquivo', r((req, res) => {
     const d = docDoEscritorio(req);
     res.download(path.join(DATA_DIR, 'documentos', d.arquivo), d.nome);
+  }));
+  app.patch('/api/documentos/:id/compartilhar', r((req) => {
+    const d = docDoEscritorio(req);
+    q('UPDATE documentos SET compartilhado = ? WHERE id = ?').run(req.body.compartilhado ? 1 : 0, d.id);
+    auditar(req, 'processo', d.processo_id, req.body.compartilhado ? 'compartilhou documento com o cliente' : 'deixou de compartilhar documento', { nome: d.nome });
+    return { ok: true };
   }));
   app.delete('/api/documentos/:id', r((req) => {
     const d = docDoEscritorio(req);

@@ -14,6 +14,8 @@ import Prazos from './pages/Prazos.jsx';
 import Agenda from './pages/Agenda.jsx';
 import Financeiro from './pages/Financeiro.jsx';
 import Configuracoes from './pages/Configuracoes.jsx';
+import Mensagens from './pages/Mensagens.jsx';
+import { PortalProvider, PortalEntrar, PortalAtivar, PortalLayout, PortalInicio, PortalProcesso, PortalMensagens, PortalPagamentos } from './pages/Portal.jsx';
 
 function Protegido({ children }) {
   const { carregando, usuario } = useSessao();
@@ -44,6 +46,16 @@ function App() {
         <Route path="agenda" element={<Agenda />} />
         <Route path="financeiro" element={<SoFinanceiro><Financeiro /></SoFinanceiro>} />
         <Route path="configuracoes" element={<Configuracoes />} />
+        <Route path="mensagens" element={<Mensagens />} />
+        <Route path="mensagens/:clienteId" element={<Mensagens />} />
+      </Route>
+      <Route path="/portal/entrar" element={<PortalEntrar />} />
+      <Route path="/portal/ativar/:token" element={<PortalAtivar />} />
+      <Route path="/portal" element={<PortalLayout />}>
+        <Route index element={<PortalInicio />} />
+        <Route path="processos/:id" element={<PortalProcesso />} />
+        <Route path="mensagens" element={<PortalMensagens />} />
+        <Route path="pagamentos" element={<PortalPagamentos />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
@@ -54,9 +66,11 @@ createRoot(document.getElementById('root')).render(
   <StrictMode>
     <BrowserRouter>
       <SessaoProvider>
-        <AvisoProvider>
-          <App />
-        </AvisoProvider>
+        <PortalProvider>
+          <AvisoProvider>
+            <App />
+          </AvisoProvider>
+        </PortalProvider>
       </SessaoProvider>
     </BrowserRouter>
   </StrictMode>,

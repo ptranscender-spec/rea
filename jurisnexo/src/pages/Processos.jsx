@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Plus, Search, Pencil, Trash2, ArrowLeft, Upload, Download, FileText, Save, X } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, ArrowLeft, Upload, Download, FileText, Save, X, Eye, EyeOff, Share2 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { useSessao } from '../lib/sessao.jsx';
 import { AREAS, FASES, STATUS_PROC, CATS_DOC, mascaraCNJ, moeda, data, utcParaLocal, hojeIso } from '../lib/format.js';
@@ -137,11 +137,11 @@ export function ListaProcessos() {
 
 function Andamentos({ p, recarregar }) {
   const avisar = useAviso();
-  const [f, setF] = useState({ data: hojeIso(), descricao: '' });
+  const [f, setF] = useState({ data: hojeIso(), descricao: '', visivel_cliente: true });
   const [excluir, setExcluir] = useState(null);
   const enviar = async (e) => {
     e.preventDefault();
-    try { await api.post(`/api/processos/${p.id}/andamentos`, f); setF({ data: hojeIso(), descricao: '' }); avisar('Andamento registrado.'); recarregar(); } catch (err) { avisar(err.message, 'erro'); }
+    try { await api.post(`/api/processos/${p.id}/andamentos`, f); setF({ data: hojeIso(), descricao: '', visivel_cliente: true }); avisar('Andamento registrado.'); recarregar(); } catch (err) { avisar(err.message, 'erro'); }
   };
   return (
     <div className="grid gap-6 lg:grid-cols-3">
@@ -149,6 +149,7 @@ function Andamentos({ p, recarregar }) {
         <h3 className="font-semibold">Registrar movimentação</h3>
         <Campo rotulo="Data"><input type="date" className="campo" value={f.data} onChange={(e) => setF({ ...f, data: e.target.value })} required /></Campo>
         <Campo rotulo="Descrição"><textarea rows={4} className="campo" value={f.descricao} onChange={(e) => setF({ ...f, descricao: e.target.value })} required placeholder="Ex.: Juntada de contestação." /></Campo>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="accent-esmeralda-500" checked={f.visivel_cliente} onChange={(e) => setF({ ...f, visivel_cliente: e.target.checked })} />Visível para o cliente no portal</label>
         <button className="btn-primario w-full"><Plus size={16} />Adicionar</button>
       </form>
       <div className="cartao p-5 lg:col-span-2">
@@ -158,8 +159,13 @@ function Andamentos({ p, recarregar }) {
               <li key={a.id} className="group mb-5 ml-5 last:mb-0">
                 <span className="absolute -left-[7px] mt-1.5 h-3 w-3 rounded-full border-2 border-white bg-esmeralda-500 dark:border-marinho-900" />
                 <div className="flex items-start justify-between gap-2">
-                  <div><p className="text-xs font-semibold text-esmeralda-600">{data(a.data)}</p><p className="mt-0.5 whitespace-pre-line text-sm">{a.descricao}</p>{a.autor && <p className="mt-1 text-xs text-slate-400">por {a.autor}</p>}</div>
-                  <button className="btn-icone p-1 opacity-0 group-hover:opacity-100 focus:opacity-100" onClick={() => setExcluir(a)} aria-label="Excluir andamento"><Trash2 size={14} /></button>
+                  <div><p className="text-xs font-semibold text-esmeralda-600">{data(a.data)}{!a.visivel_cliente && <span className="ml-2 font-normal text-slate-400">· interno</span>}</p><p className="mt-0.5 whitespace-pre-line text-sm">{a.descricao}</p>{a.autor && <p className="mt-1 text-xs text-slate-400">por {a.autor}</p>}</div>
+                  <div className="flex shrink-0">
+                    <button className="btn-icone p-1" title={a.visivel_cliente ? 'Visível para o cliente — clique para ocultar' : 'Oculto do cliente — clique para mostrar'}
+                      onClick={async () => { await api.patch(`/api/andamentos/${a.id}`, { visivel_cliente: !a.visivel_cliente }); recarregar(); }}
+                      aria-label={a.visivel_cliente ? 'Ocultar do cliente' : 'Mostrar ao cliente'}>{a.visivel_cliente ? <Eye size={14} className="text-esmeralda-600" /> : <EyeOff size={14} />}</button>
+                    <button className="btn-icone p-1 opacity-0 group-hover:opacity-100 focus:opacity-100" onClick={() => setExcluir(a)} aria-label="Excluir andamento"><Trash2 size={14} /></button>
+                  </div>
                 </div>
               </li>
             ))}
@@ -177,6 +183,7 @@ function Documentos({ p, recarregar }) {
   const arquivoRef = useRef(null);
   const [cat, setCat] = useState('Petição');
   const [nome, setNome] = useState('');
+  const [compartilhar, setCompartilhar] = useState(false);
   const [enviando, setEnviando] = useState(false);
   const [excluir, setExcluir] = useState(null);
   const enviar = async (e) => {
@@ -184,7 +191,7 @@ function Documentos({ p, recarregar }) {
     const arq = arquivoRef.current?.files?.[0];
     if (!arq) { avisar('Escolha um arquivo.', 'erro'); return; }
     const fd = new FormData();
-    fd.append('arquivo', arq); fd.append('categoria', cat); if (nome) fd.append('nome', nome);
+    fd.append('arquivo', arq); fd.append('categoria', cat); fd.append('compartilhado', compartilhar ? '1' : '0'); if (nome) fd.append('nome', nome);
     setEnviando(true);
     try { await api.post(`/api/processos/${p.id}/documentos`, fd); avisar('Documento enviado.'); setNome(''); arquivoRef.current.value = ''; recarregar(); }
     catch (err) { avisar(err.message, 'erro'); } finally { setEnviando(false); }
@@ -197,6 +204,7 @@ function Documentos({ p, recarregar }) {
         <input ref={arquivoRef} type="file" className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-marinho-700 file:px-3 file:py-2 file:text-sm file:text-white" />
         <Campo rotulo="Nome (opcional)"><input className="campo" value={nome} onChange={(e) => setNome(e.target.value)} placeholder="Usa o nome do arquivo se vazio" /></Campo>
         <Campo rotulo="Categoria"><Selecao opcoes={CATS_DOC} value={cat} onChange={(e) => setCat(e.target.value)} /></Campo>
+        <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="accent-esmeralda-500" checked={compartilhar} onChange={(e) => setCompartilhar(e.target.checked)} />Compartilhar com o cliente no portal</label>
         <button className="btn-primario w-full" disabled={enviando}><Upload size={16} />{enviando ? 'Enviando…' : 'Enviar'}</button>
         <p className="text-xs text-slate-500">Até 25 MB por arquivo.</p>
       </form>
@@ -206,7 +214,14 @@ function Documentos({ p, recarregar }) {
             {p.documentos.map((d) => (
               <li key={d.id} className="flex items-center gap-3 px-4 py-3">
                 <FileText size={20} className="shrink-0 text-slate-400" />
-                <div className="min-w-0 flex-1"><p className="truncate font-medium">{d.nome}</p><p className="text-xs text-slate-500">{d.categoria} · {tam(d.tamanho)} · {utcParaLocal(d.criado_em)}{d.enviado_por_nome ? ` · ${d.enviado_por_nome}` : ''}</p></div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-medium">{d.nome}</p>
+                  <p className="text-xs text-slate-500">{d.categoria} · {tam(d.tamanho)} · {utcParaLocal(d.criado_em)}{d.enviado_por_nome ? ` · ${d.enviado_por_nome}` : ''}</p>
+                  {d.enviado_por_cliente ? <Selo cor="azul" className="mt-1">Enviado pelo cliente</Selo> : d.compartilhado ? <Selo cor="verde" className="mt-1">Compartilhado com o cliente</Selo> : null}
+                </div>
+                {!d.enviado_por_cliente && <button className="btn-icone" title={d.compartilhado ? 'Parar de compartilhar' : 'Compartilhar com o cliente'} aria-label={d.compartilhado ? 'Parar de compartilhar' : 'Compartilhar com o cliente'}
+                  onClick={async () => { await api.patch(`/api/documentos/${d.id}/compartilhar`, { compartilhado: !d.compartilhado }); avisar(d.compartilhado ? 'Documento não está mais visível ao cliente.' : 'Documento compartilhado com o cliente.'); recarregar(); }}>
+                  <Share2 size={16} className={d.compartilhado ? 'text-esmeralda-600' : ''} /></button>}
                 <a className="btn-icone" href={`/api/documentos/${d.id}/arquivo`} aria-label="Baixar"><Download size={16} /></a>
                 <button className="btn-icone" onClick={() => setExcluir(d)} aria-label="Excluir"><Trash2 size={16} /></button>
               </li>

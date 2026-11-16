@@ -51,6 +51,32 @@ Os dados ficam na pasta `dados/`: o banco `jurisnexo.db` e os documentos enviado
 - Modo escuro
 - Layout para celular
 
+### Portal do cliente
+
+O cliente entra em **/portal/entrar** com o e-mail e uma senha própria. No portal, ele:
+- vê os próprios processos;
+- vê os andamentos marcados como visíveis;
+- vê as próximas audiências e os pagamentos;
+- baixa os documentos compartilhados e envia documentos;
+- conversa com o escritório pelo chat.
+
+**Para liberar o acesso:**
+1. Abra a ficha do cliente, que precisa ter e-mail.
+2. No cartão **Portal do cliente**, clique em **Liberar acesso**.
+3. Envie o link ao cliente; também dá para enviar pelo WhatsApp com um clique.
+4. O cliente cria a senha e entra.
+
+O link vale para um único acesso. Se o cliente esquecer a senha, gere um novo link.
+
+**O que o cliente vê:**
+- **Andamentos:** começam visíveis. Desmarque **Visível para o cliente** no formulário, ou clique no ícone de olho, para mantê-los internos.
+- **Documentos:** começam internos. Marque **Compartilhar com o cliente** ao enviar, ou use o ícone de compartilhar.
+- **Documentos enviados pelo cliente:** aparecem no processo e geram um aviso em **Mensagens**.
+
+O menu **Mensagens** mostra quantas mensagens ainda não foram lidas. As conversas se atualizam sozinhas a cada poucos segundos. **Desligar** o portal tira o acesso do cliente na hora.
+
+Os dados de demonstração já liberam o portal da cliente fictícia **Mariana**. O e-mail e a senha dela aparecem na tela de Configurações depois que os dados são carregados.
+
 ### Papéis
 
 | Papel | Acesso |
@@ -71,7 +97,7 @@ O sistema ainda não envia e-mails.
 
 ## Próximas etapas (não incluídas)
 
-- Portal e app do cliente
+- App nativo (Android/iOS) para o cliente
 - IA para prazos e resumos
 - WhatsApp
 - Assinatura digital
@@ -88,6 +114,7 @@ npm test
 O teste cobre o fluxo completo da API:
 - Validações
 - Cálculo de prazo com feriado
+- Portal do cliente: acesso, privacidade de andamentos e documentos, mensagens, desligamento
 - Parcelamento
 - Bloqueio do estagiário no Financeiro
 - Isolamento entre escritórios

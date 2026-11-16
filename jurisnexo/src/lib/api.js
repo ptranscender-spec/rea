@@ -10,7 +10,7 @@ async function chamar(metodo, url, corpo) {
   try { r = await fetch(url, opcoes); } catch { throw new ErroApi(0, 'Sem conexão com o servidor.'); }
   const dados = (r.headers.get('content-type') || '').includes('json') ? await r.json() : null;
   if (!r.ok) {
-    if (r.status === 401 && !url.startsWith('/api/auth')) window.dispatchEvent(new Event('jn-sessao-expirada'));
+    if (r.status === 401 && !url.startsWith('/api/auth') && !url.startsWith('/api/portal')) window.dispatchEvent(new Event('jn-sessao-expirada'));
     throw new ErroApi(r.status, dados?.erro || 'Algo deu errado.');
   }
   return dados;

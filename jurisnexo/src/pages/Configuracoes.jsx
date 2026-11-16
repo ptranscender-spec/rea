@@ -205,16 +205,26 @@ function Demo() {
   const avisar = useAviso();
   const { atualizar } = useSessao();
   const [ocupado, setOcupado] = useState(false);
+  const [portal, setPortal] = useState(null);
   const carregar = async () => {
     setOcupado(true);
-    try { const r = await api.post('/api/config/demo'); await atualizar(); avisar(r.mensagem); } catch (e) { avisar(e.message, 'erro'); } finally { setOcupado(false); }
+    try { const r = await api.post('/api/config/demo'); await atualizar(); avisar(r.mensagem); if (r.portal) setPortal(r.portal); } catch (e) { avisar(e.message, 'erro'); } finally { setOcupado(false); }
   };
   return (
     <div className="cartao max-w-xl p-6">
       <Database className="text-esmeralda-500" size={28} />
       <h3 className="mt-3 text-lg font-semibold">Dados de demonstração</h3>
-      <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Cria 5 clientes, 6 processos com andamentos, prazos (inclusive atrasados e de hoje), compromissos na agenda, lançamentos financeiros parcelados e 2 membros fictícios. Tudo fica marcado como "demo" e pode ser apagado depois.</p>
+      <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">Cria 5 clientes, 6 processos com andamentos, prazos (inclusive atrasados e de hoje), compromissos na agenda, lançamentos financeiros parcelados, 2 membros fictícios e o portal de uma cliente com conversa iniciada. Tudo fica marcado como "demo" e pode ser apagado depois.</p>
       <button className="btn-primario mt-4" disabled={ocupado} onClick={carregar}>{ocupado ? 'Carregando…' : 'Carregar dados de demonstração'}</button>
+      {portal && (
+        <div className="mt-4 rounded-lg bg-esmeralda-50 p-4 text-sm dark:bg-esmeralda-500/10">
+          <p className="font-semibold">Teste o portal do cliente como a Mariana:</p>
+          <p className="mt-1">Endereço: <a className="text-esmeralda-700 underline dark:text-esmeralda-400" href="/portal/entrar" target="_blank" rel="noreferrer">{window.location.origin}/portal/entrar</a></p>
+          <p>E-mail: <b>{portal.email}</b></p>
+          <p>Senha: <b>{portal.senha}</b></p>
+          <p className="mt-1 text-xs text-slate-500">Dica: abra numa janela anônima para ficar logado nos dois ao mesmo tempo.</p>
+        </div>
+      )}
     </div>
   );
 }

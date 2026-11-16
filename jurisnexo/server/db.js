@@ -9,6 +9,7 @@ export function abrirBanco(arquivo = path.join(DATA_DIR, 'jurisnexo.db')) {
   const db = new DatabaseSync(arquivo);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  migrar(db);
   return db;
 }
 
@@ -152,4 +153,38 @@ CREATE INDEX IF NOT EXISTS ix_cli_esc ON clientes(escritorio_id);
 CREATE INDEX IF NOT EXISTS ix_prazo_esc ON prazos(escritorio_id, vencimento);
 CREATE INDEX IF NOT EXISTS ix_evento_esc ON eventos(escritorio_id, inicio);
 CREATE INDEX IF NOT EXISTS ix_lanc_esc ON lancamentos(escritorio_id, vencimento);
+CREATE TABLE IF NOT EXISTS sessoes_portal (
+  token TEXT PRIMARY KEY,
+  cliente_id INTEGER NOT NULL REFERENCES clientes(id) ON DELETE CASCADE,
+  expira_em TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mensagens (
+  id INTEGER PRIMARY KEY,
+  escritorio_id INTEGER NOT NULL REFERENCES escritorios(id) ON DELETE CASCADE,
+  cliente_id INTEGER NOT NULL REFERENCES clientes(id) ON DELETE CASCADE,
+  autor TEXT NOT NULL CHECK (autor IN ('cliente','escritorio')),
+  usuario_id INTEGER REFERENCES usuarios(id) ON DELETE SET NULL,
+  texto TEXT NOT NULL,
+  lida INTEGER NOT NULL DEFAULT 0,
+  criado_em TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS ix_msg_cli ON mensagens(cliente_id, id);
 `;
+
+// Colunas adicionadas depois da primeira versão (bancos antigos recebem as colunas sem perder dados).
+const COLUNAS_NOVAS = [
+  ['clientes', 'portal_token', 'TEXT'],
+  ['clientes', 'portal_senha_hash', 'TEXT'],
+  ['clientes', 'portal_ativo', 'INTEGER NOT NULL DEFAULT 0'],
+  ['clientes', 'portal_ultimo_acesso', 'TEXT'],
+  ['andamentos', 'visivel_cliente', 'INTEGER NOT NULL DEFAULT 1'],
+  ['documentos', 'compartilhado', 'INTEGER NOT NULL DEFAULT 0'],
+  ['documentos', 'enviado_por_cliente', 'INTEGER NOT NULL DEFAULT 0'],
+];
+function migrar(db) {
+  for (const [tabela, coluna, tipo] of COLUNAS_NOVAS) {
+    const existe = db.prepare(`PRAGMA table_info(${tabela})`).all().some((c) => c.name === coluna);
+    if (!existe) db.exec(`ALTER TABLE ${tabela} ADD COLUMN ${coluna} ${tipo}`);
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS ix_cli_portal_token ON clientes(portal_token)');
+}

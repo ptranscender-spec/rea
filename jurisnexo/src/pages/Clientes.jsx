@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { Plus, Search, Pencil, Trash2, Phone, Mail, MapPin, MessageCircle, Building2, User, ArrowLeft } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, Phone, Mail, MapPin, MessageCircle, Building2, User, ArrowLeft, KeyRound, Copy, MessagesSquare } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { useSessao } from '../lib/sessao.jsx';
 import {
-  mascaraCPF, mascaraCNPJ, mascaraCEP, mascaraTel, cpfValido, cnpjValido, UFS, data, dataHora, moeda, hojeIso,
+  mascaraCPF, mascaraCNPJ, mascaraCEP, mascaraTel, cpfValido, cnpjValido, UFS, data, dataHora, moeda, hojeIso, utcParaLocal,
 } from '../lib/format.js';
 import {
   Cabecalho, Campo, Carregando, Confirmar, Modal, Paginacao, Selecao, Selo, Vazio, useAviso, useAtraso, useCarregar,
@@ -140,6 +140,46 @@ export function ListaClientes() {
   );
 }
 
+function CartaoPortal({ c, recarregar }) {
+  const avisar = useAviso();
+  const [link, setLink] = useState('');
+  const [desativar, setDesativar] = useState(false);
+  const gerar = async () => {
+    try { const r = await api.post(`/api/clientes/${c.id}/portal`); setLink(`${window.location.origin}/portal/ativar/${r.token}`); recarregar(); }
+    catch (e) { avisar(e.message, 'erro'); }
+  };
+  const zap = c.whatsapp?.replace(/\D/g, '');
+  const textoZap = encodeURIComponent(`Olá, ${c.nome.split(' ')[0]}! Liberamos seu acesso ao portal do escritório, onde você acompanha seu processo e fala com a gente. Crie sua senha neste link: ${link}`);
+  return (
+    <section className="cartao space-y-3 p-5 text-sm">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="flex items-center gap-2 font-semibold"><KeyRound size={16} className="text-esmeralda-500" />Portal do cliente</h2>
+        {c.portal_ativo ? <Selo cor="verde">Ativo</Selo> : c.portal_pendente ? <Selo cor="amarelo">Aguardando 1º acesso</Selo> : <Selo cor="cinza">Desligado</Selo>}
+      </div>
+      <p className="text-slate-500">{c.portal_ativo
+        ? `O cliente acompanha os processos, envia documentos e conversa com o escritório.${c.portal_ultimo_acesso ? ` Último acesso: ${utcParaLocal(c.portal_ultimo_acesso)}.` : ''}`
+        : 'Gere um link para o cliente criar a senha e acompanhar o caso pela internet.'}</p>
+      {link && (
+        <div className="space-y-2 rounded-lg bg-esmeralda-50 p-3 dark:bg-esmeralda-500/10">
+          <p className="text-xs text-slate-600 dark:text-slate-300">Envie este link ao cliente (vale para um único acesso):</p>
+          <div className="flex gap-1"><input readOnly className="campo py-1 text-xs" value={link} onFocus={(e) => e.target.select()} aria-label="Link do portal" />
+            <button className="btn-claro px-2" onClick={() => { navigator.clipboard?.writeText(link); avisar('Link copiado.'); }} aria-label="Copiar link"><Copy size={14} /></button></div>
+          {zap && <a className="btn-primario w-full text-xs" target="_blank" rel="noreferrer" href={`https://wa.me/55${zap}?text=${textoZap}`}><MessageCircle size={14} />Enviar pelo WhatsApp</a>}
+        </div>
+      )}
+      <div className="flex flex-wrap gap-2">
+        <button className="btn-claro" onClick={gerar}>{c.portal_ativo ? 'Gerar link de nova senha' : c.portal_pendente ? 'Gerar novo link' : 'Liberar acesso'}</button>
+        {(c.portal_ativo || c.portal_pendente) && <button className="btn-claro text-red-600" onClick={() => setDesativar(true)}>Desligar</button>}
+        <Link to={`/app/mensagens/${c.id}`} className="btn-claro"><MessagesSquare size={16} />Mensagens</Link>
+      </div>
+      {!c.email && <p className="text-xs text-amber-700 dark:text-amber-300">Cadastre o e-mail do cliente para liberar o portal.</p>}
+      <Confirmar aberto={desativar} onFechar={() => setDesativar(false)} titulo="Desligar portal" rotulo="Desligar"
+        texto="O cliente perde o acesso imediatamente. As mensagens ficam guardadas."
+        onConfirmar={async () => { await api.del(`/api/clientes/${c.id}/portal`); setDesativar(false); setLink(''); avisar('Portal desligado.'); recarregar(); }} />
+    </section>
+  );
+}
+
 export function DetalheCliente() {
   const { id } = useParams();
   const nav = useNavigate();
@@ -161,6 +201,7 @@ export function DetalheCliente() {
         <Link to={`/app/processos?novo=1&cliente=${c.id}`} className="btn-primario"><Plus size={16} />Novo processo</Link>
       </Cabecalho>
       <div className="grid gap-6 lg:grid-cols-3">
+        <div className="min-w-0 space-y-6">
         <section className="cartao space-y-3 p-5 text-sm">
           <h2 className="font-semibold">Contato</h2>
           {c.telefone && <p className="flex items-center gap-2"><Phone size={16} className="text-slate-400" />{c.telefone}</p>}
@@ -171,6 +212,8 @@ export function DetalheCliente() {
           {c.observacoes && <div className="rounded-lg bg-slate-50 p-3 text-slate-600 dark:bg-marinho-800 dark:text-slate-300">{c.observacoes}</div>}
           {!c.telefone && !c.email && !endereco && <p className="text-slate-500">Nenhum contato cadastrado.</p>}
         </section>
+          <CartaoPortal c={c} recarregar={recarregar} />
+        </div>
         <div className="min-w-0 space-y-6 lg:col-span-2">
           <section className="cartao">
             <h2 className="border-b border-slate-200 px-5 py-4 font-semibold dark:border-marinho-800">Processos ({c.processos.length})</h2>

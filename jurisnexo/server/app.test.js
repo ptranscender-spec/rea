@@ -113,3 +113,60 @@ test('fluxo completo e isolamento entre escritórios', async () => {
     a.fechar();
   }
 });
+
+test('portal do cliente', async () => {
+  const db = abrirBanco(':memory:');
+  const esc = cliente(criarApp(db));
+  const cli = cliente(criarApp(db));
+  try {
+    await esc.req('POST', '/api/auth/cadastro', { nome: 'Ana', email: 'ana2@x.com', senha: 'senha12345', escritorio: 'Esc' });
+    let r = await esc.req('POST', '/api/clientes', { tipo: 'PF', nome: 'João' });
+    const id = r.corpo.id;
+    r = await esc.req('POST', `/api/clientes/${id}/portal`);
+    assert.equal(r.status, 400, 'sem e-mail não libera');
+    await esc.req('PUT', `/api/clientes/${id}`, { tipo: 'PF', nome: 'João', email: 'joao@x.com' });
+    r = await esc.req('POST', `/api/clientes/${id}/portal`);
+    const token = r.corpo.token;
+    r = await esc.req('GET', `/api/clientes/${id}`);
+    assert.equal(r.corpo.portal_token, undefined, 'token não vaza na API');
+    assert.equal(r.corpo.portal_pendente, true);
+
+    const p = (await esc.req('POST', '/api/processos', { titulo: 'Caso do João', cliente_id: id })).corpo.id;
+    const outro = (await esc.req('POST', '/api/processos', { titulo: 'Caso de outra pessoa' })).corpo.id;
+    await esc.req('POST', `/api/processos/${p}/andamentos`, { data: '2026-01-10', descricao: 'Público' });
+    await esc.req('POST', `/api/processos/${p}/andamentos`, { data: '2026-01-11', descricao: 'Interno', visivel_cliente: false });
+
+    r = await cli.req('GET', `/api/portal/convite/${token}`);
+    assert.equal(r.corpo.nome, 'João');
+    r = await cli.req('POST', '/api/portal/ativar', { token, senha: 'cliente123' });
+    assert.equal(r.status, 200);
+    r = await cli.req('GET', `/api/portal/convite/${token}`);
+    assert.equal(r.status, 404, 'link só vale uma vez');
+    r = await cli.req('GET', '/api/portal/resumo');
+    assert.deepEqual(r.corpo.processos.map((x) => x.titulo), ['Caso do João']);
+    assert.equal(r.corpo.processos[0].ultimo_andamento.descricao, 'Público');
+    r = await cli.req('GET', `/api/portal/processos/${p}`);
+    assert.deepEqual(r.corpo.andamentos.map((a) => a.descricao), ['Público']);
+    r = await cli.req('GET', `/api/portal/processos/${outro}`);
+    assert.equal(r.status, 404, 'cliente não vê processo de outro');
+    r = await cli.req('GET', '/api/clientes');
+    assert.equal(r.status, 401, 'sessão do portal não acessa a área do escritório');
+
+    await cli.req('POST', '/api/portal/mensagens', { texto: 'Oi, doutora' });
+    r = await esc.req('GET', '/api/mensagens/nao-lidas');
+    assert.equal(r.corpo.n, 1);
+    r = await esc.req('GET', `/api/mensagens/${id}`);
+    assert.equal(r.corpo.itens[0].texto, 'Oi, doutora');
+    await esc.req('POST', `/api/mensagens/${id}`, { texto: 'Olá, João' });
+    r = await cli.req('GET', '/api/portal/resumo');
+    assert.equal(r.corpo.naoLidas, 1);
+    r = await cli.req('GET', '/api/portal/mensagens');
+    assert.equal(r.corpo.length, 2);
+
+    await esc.req('DELETE', `/api/clientes/${id}/portal`);
+    r = await cli.req('GET', '/api/portal/resumo');
+    assert.equal(r.status, 401, 'desativar derruba a sessão');
+    r = await cli.req('POST', '/api/portal/entrar', { email: 'joao@x.com', senha: 'cliente123' });
+    assert.equal(r.status, 401);
+  } finally { esc.fechar(); cli.fechar(); }
+});

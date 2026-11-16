@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, Users, Scale, KanbanSquare, AlarmClock, CalendarDays, Wallet, Settings,
-  Search, Bell, Moon, Sun, LogOut, Menu, X, Briefcase, User,
+  Search, Bell, Moon, Sun, LogOut, Menu, X, Briefcase, User, MessagesSquare,
 } from 'lucide-react';
 import { useSessao } from '../lib/sessao.jsx';
 import { api } from '../lib/api.js';
@@ -116,8 +116,16 @@ export default function Layout() {
   const { usuario, escritorio, sair, veFinanceiro } = useSessao();
   const [escuro, alternarTema] = useTema();
   const [menu, setMenu] = useState(false);
+  const [naoLidas, setNaoLidas] = useState(0);
   const loc = useLocation();
   useEffect(() => setMenu(false), [loc.pathname]);
+  useEffect(() => {
+    const contar = () => document.visibilityState === 'visible' && api.get('/api/mensagens/nao-lidas').then((r) => setNaoLidas(r.n)).catch(() => {});
+    contar();
+    const t = setInterval(contar, 15000);
+    window.addEventListener('jn-mensagens-lidas', contar);
+    return () => { clearInterval(t); window.removeEventListener('jn-mensagens-lidas', contar); };
+  }, [loc.pathname]);
   const itens = [
     { to: '/app', rotulo: 'Painel', icone: LayoutDashboard, fim: true },
     { to: '/app/clientes', rotulo: 'Clientes', icone: Users },
@@ -125,6 +133,7 @@ export default function Layout() {
     { to: '/app/kanban', rotulo: 'Kanban', icone: KanbanSquare },
     { to: '/app/prazos', rotulo: 'Prazos e tarefas', icone: AlarmClock },
     { to: '/app/agenda', rotulo: 'Agenda', icone: CalendarDays },
+    { to: '/app/mensagens', rotulo: 'Mensagens', icone: MessagesSquare, badge: naoLidas },
     veFinanceiro && { to: '/app/financeiro', rotulo: 'Financeiro', icone: Wallet },
     { to: '/app/configuracoes', rotulo: 'Configurações', icone: Settings },
   ].filter(Boolean);
@@ -134,10 +143,10 @@ export default function Layout() {
       <div className="flex items-center justify-between px-5 py-5"><Logo claro /><button className="rounded p-1 hover:bg-white/10 lg:hidden" onClick={() => setMenu(false)} aria-label="Fechar menu"><X size={20} /></button></div>
       <p className="truncate px-5 pb-4 text-xs text-marinho-200">{escritorio?.nome}</p>
       <ul className="flex-1 space-y-0.5 px-3">
-        {itens.map(({ to, rotulo, icone: I, fim }) => (
+        {itens.map(({ to, rotulo, icone: I, fim, badge }) => (
           <li key={to}>
             <NavLink to={to} end={fim} className={({ isActive }) => `flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition ${isActive ? 'bg-white/10 text-white' : 'text-marinho-100 hover:bg-white/5 hover:text-white'}`}>
-              {({ isActive }) => <><I size={18} className={isActive ? 'text-esmeralda-400' : ''} />{rotulo}</>}
+              {({ isActive }) => <><I size={18} className={isActive ? 'text-esmeralda-400' : ''} />{rotulo}{badge > 0 && <span className="ml-auto rounded-full bg-esmeralda-500 px-1.5 text-[11px] font-bold text-white">{badge}</span>}</>}
             </NavLink>
           </li>
         ))}

@@ -58,6 +58,12 @@ export const deIso = (s) => {
   const [a, m, d] = s.slice(0, 10).split('-').map(Number);
   return new Date(a, m - 1, d);
 };
+/** Data e hora atuais em São Paulo no formato YYYY-MM-DDTHH:MM (o mesmo usado nos eventos). */
+export function agoraSP() {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+    .formatToParts(new Date()).map((x) => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+}
 export function hojeSP() {
   const p = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date());
   return p; // YYYY-MM-DD
